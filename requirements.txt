@@ -1,0 +1,11 @@
+flask>=3.0
+gunicorn>=22.0
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+psutil>=5.9
+requests>=2.31
+apscheduler>=3.10
+python-dotenv>=1.0
+lxml>=5.0
+m3u8>=4.0
+Pillow>=10.0

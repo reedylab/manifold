@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Manifold</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/static/style.css?v=38" />
+</head>
+<body class="theme-dark">
+  <!-- Header -->
+  <header class="app-header">
+    <div class="brand">
+      <span class="logo">&#x1F310;</span>
+      <span>Manifold</span>
+    </div>
+    <div class="header-actions">
+      <span id="channel-count" class="badge badge-running">-- channels</span>
+      <span id="vpn-badge" class="badge vpn-badge hidden" title="VPN Status">VPN: --</span>
+      <div class="output-links">
+        <a href="/output/manifold.m3u" target="_blank" class="output-link" title="M3U Playlist URL">M3U</a><button class="copy-btn" data-copy-path="/output/manifold.m3u" title="Copy M3U URL">&#x2398;</button>
+        <a href="/output/manifold.xml" target="_blank" class="output-link" title="XMLTV EPG URL">EPG</a><button class="copy-btn" data-copy-path="/output/manifold.xml" title="Copy EPG URL">&#x2398;</button>
+        <a href="/discover.json" target="_blank" class="output-link output-link-hdhr" title="HDHomeRun (for Plex)">HDHR</a><button class="copy-btn" data-copy-path="/discover.json" title="Copy HDHR URL">&#x2398;</button>
+      </div>
+      <button id="btn-generate" class="btn btn-primary btn-sm-header">Regenerate</button>
+    </div>
+  </header>
+
+  <!-- Shell -->
+  <div class="app-shell">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <nav class="nav">
+        <button class="nav-item active" data-view="channels">
+          <span class="nav-ic">&#x1F4FA;</span> Channels
+        </button>
+        <button class="nav-item" data-view="m3u-sources">
+          <span class="nav-ic">&#x1F4E5;</span> M3U Sources
+        </button>
+        <button class="nav-item" data-view="epg-sources">
+          <span class="nav-ic">&#x1F4CB;</span> EPG Sources
+        </button>
+        <button class="nav-item" data-view="epg">
+          <span class="nav-ic">&#x1F4D6;</span> EPG Data
+        </button>
+        <button class="nav-item" data-view="bumps">
+          <span class="nav-ic">&#x1F3AC;</span> Bumps
+        </button>
+        <button class="nav-item" data-view="guide">
+          <span class="nav-ic">&#x1F4F1;</span> Guide
+        </button>
+        <button class="nav-item" data-view="logs">
+          <span class="nav-ic">&#x1F4DC;</span> Logs
+        </button>
+        <button class="nav-item" data-view="stats">
+          <span class="nav-ic">&#x1F4CA;</span> System
+        </button>
+        <button class="nav-item nav-item-parent" data-view="settings">
+          <span class="nav-ic">&#x2699;&#xFE0F;</span> Settings
+          <span class="nav-arrow">&#x25BE;</span>
+        </button>
+        <div id="settings-subnav" class="nav-subnav">
+          <button class="nav-subitem active" data-sub="general">General</button>
+          <button class="nav-subitem" data-sub="tasks">Tasks</button>
+          <button class="nav-subitem" data-sub="scheduler">Scheduler</button>
+          <button class="nav-subitem" data-sub="images">Images</button>
+          <button class="nav-subitem" data-sub="epg-settings">EPG</button>
+          <button class="nav-subitem" data-sub="stream">Stream</button>
+        </div>
+      </nav>
+      <div class="sidebar-info">
+        <div><strong>DB:</strong> <span id="sidebar-db">--</span></div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="content">
+
+      <!-- CHANNELS -->
+      <section id="view-channels" class="view visible">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Channels</h3>
+            <div class="table-filters">
+              <input type="text" class="filter-search" id="channel-search"
+                     placeholder="Search channels..." autocomplete="off" style="width:240px">
+              <select class="filter-status" id="channel-filter">
+                <option value="all">All</option>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+                <option value="mapped">EPG Mapped</option>
+                <option value="unmapped">No EPG</option>
+              </select>
+              <select class="filter-status" id="channel-tag-filter">
+                <option value="">All Tags</option>
+              </select>
+            </div>
+            <div class="panel-actions">
+              <button class="btn btn-sm view-toggle" id="btn-view-tiles" title="Tile view">Tiles</button>
+              <button class="btn btn-sm view-toggle active" id="btn-view-table" title="Table view">Table</button>
+              <button class="btn btn-sm" id="btn-auto-number" title="Auto-assign channel numbers">Auto-Number</button>
+              <button class="btn btn-ghost" id="btn-refresh-channels">Refresh</button>
+            </div>
+          </div>
+          <div id="channels-bulk-bar" class="bulk-bar hidden">
+            <span id="channels-bulk-count">0 selected</span>
+            <button class="btn btn-sm bulk-btn-activate" id="channels-bulk-activate">Activate</button>
+            <button class="btn btn-sm bulk-btn-deactivate" id="channels-bulk-deactivate">Deactivate</button>
+            <button class="btn btn-danger btn-sm" id="channels-bulk-delete">Delete Selected</button>
+          </div>
+          <!-- Table View -->
+          <div id="channels-table-view" class="table-wrap">
+            <table class="tbl tbl-channels">
+              <thead>
+                <tr>
+                  <th class="th-check"><input type="checkbox" id="channels-select-all"></th>
+                  <th class="th-chno">#</th>
+                  <th>Title</th>
+                  <th>Tags</th>
+                  <th>EPG</th>
+                  <th>Active</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="channels-body"></tbody>
+            </table>
+          </div>
+          <!-- Tile View -->
+          <div id="channels-tile-view" class="channel-grid hidden"></div>
+        </div>
+      </section>
+
+      <!-- M3U SOURCES -->
+      <section id="view-m3u-sources" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>M3U Playlist Sources</h3>
+            <div class="panel-actions">
+              <button class="btn btn-sm" id="btn-ingest-all">Ingest All</button>
+              <button class="btn btn-primary btn-sm-header" id="btn-add-source">Add Source</button>
+            </div>
+          </div>
+          <div id="sources-bulk-bar" class="bulk-bar hidden">
+            <span id="sources-bulk-count">0 selected</span>
+            <button class="btn btn-danger btn-sm" id="sources-bulk-delete">Delete Selected</button>
+          </div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th class="th-check"><input type="checkbox" id="sources-select-all"></th>
+                  <th>Name</th>
+                  <th>URL</th>
+                  <th>Stream Mode</th>
+                  <th>Channels</th>
+                  <th>Last Ingested</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="m3u-sources-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- EPG SOURCES -->
+      <section id="view-epg-sources" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>EPG Sources</h3>
+            <div class="panel-actions">
+              <button class="btn btn-sm" id="btn-ingest-all-epg">Ingest All</button>
+              <button class="btn btn-primary btn-sm-header" id="btn-add-epg-source">Add EPG Source</button>
+            </div>
+          </div>
+          <div id="epgsources-bulk-bar" class="bulk-bar hidden">
+            <span id="epgsources-bulk-count">0 selected</span>
+            <button class="btn btn-danger btn-sm" id="epgsources-bulk-delete">Delete Selected</button>
+          </div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th class="th-check"><input type="checkbox" id="epgsources-select-all"></th>
+                  <th>Name</th>
+                  <th>Linked M3U</th>
+                  <th>URL</th>
+                  <th>Channels</th>
+                  <th>Last Ingested</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="epg-sources-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- EPG DATA -->
+      <section id="view-epg" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>EPG Entries</h3>
+            <div class="table-filters">
+              <input type="text" class="filter-search" id="epg-search"
+                     placeholder="Search EPG..." autocomplete="off">
+            </div>
+          </div>
+          <div id="epg-bulk-bar" class="bulk-bar hidden">
+            <span id="epg-bulk-count">0 selected</span>
+            <button class="btn btn-danger btn-sm" id="epg-bulk-delete">Delete Selected</button>
+          </div>
+          <div class="table-wrap">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th class="th-check"><input type="checkbox" id="epg-select-all"></th>
+                  <th>Channel ID</th>
+                  <th>Channel Name</th>
+                  <th>Last Updated</th>
+                </tr>
+              </thead>
+              <tbody id="epg-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- GUIDE -->
+      <section id="view-guide" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>TV Guide</h3>
+            <div class="guide-controls">
+              <button class="btn btn-sm" id="guide-prev">&lt; Prev</button>
+              <span id="guide-date" class="guide-date-label">--</span>
+              <button class="btn btn-sm" id="guide-next">Next &gt;</button>
+              <div class="guide-range-btns">
+                <button class="btn btn-sm guide-range active" data-hours="6">6h</button>
+                <button class="btn btn-sm guide-range" data-hours="12">12h</button>
+                <button class="btn btn-sm guide-range" data-hours="24">24h</button>
+              </div>
+            </div>
+          </div>
+          <div class="guide-container">
+            <div class="guide-grid" id="guide-grid"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- BUMPS -->
+      <section id="view-bumps" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Bump Clips</h3>
+            <div class="panel-actions">
+              <button id="rescan-bumps" class="btn btn-ghost">Rescan</button>
+            </div>
+          </div>
+          <div class="panel-body" style="padding:16px">
+            <div class="bump-download-form">
+              <h4>Download from YouTube</h4>
+              <div class="bump-dl-row">
+                <input type="text" id="bump-dl-url" class="filter-search" placeholder="YouTube URL..." style="width:300px">
+                <input type="text" id="bump-dl-folder" class="filter-search" placeholder="Folder name (e.g. nature)" style="width:180px">
+                <select id="bump-dl-res" class="filter-status">
+                  <option value="1080">1080p</option>
+                  <option value="720">720p</option>
+                  <option value="480">480p</option>
+                </select>
+                <button id="bump-dl-btn" class="btn btn-primary">Download</button>
+              </div>
+            </div>
+            <div id="bumps-grid" class="bump-grid"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- LOGS -->
+      <section id="view-logs" class="view">
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Logs</h3>
+            <div class="panel-actions">
+              <button id="clear-log" class="btn btn-ghost">Clear View</button>
+            </div>
+          </div>
+          <div class="log-container">
+            <pre id="log-output"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- SYSTEM STATS -->
+      <section id="view-stats" class="view">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-card-header"><h4>CPU</h4><span class="stat-live" id="cpu-live">--%</span></div>
+            <div class="stat-chart" id="cpu-chart"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-header"><h4>Memory</h4><span class="stat-live" id="ram-live">--%</span></div>
+            <div class="stat-chart" id="ram-chart"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-header"><h4>Disk</h4><span class="stat-live" id="disk-live">--</span></div>
+            <div class="stat-chart" id="disk-chart"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section id="view-settings" class="view">
+        <div class="settings-panel">
+          <div class="settings-main">
+            <div class="settings-header">
+              <h2 id="settings-section-title">General</h2>
+              <div class="settings-actions">
+                <span id="settings-status" class="settings-status"></span>
+                <button id="save-settings" class="btn btn-primary">Save</button>
+              </div>
+            </div>
+            <div id="settings-container" class="settings-content"></div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Edit Channel Modal -->
+  <div id="edit-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="edit-modal-title">Edit Channel</h3>
+        <button class="btn-close" id="edit-modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="edit-logo-section">
+          <img id="edit-logo-img" class="edit-logo-preview" src="" alt="" />
+          <div class="edit-logo-actions">
+            <label class="btn btn-sm btn-ghost edit-logo-upload-label">
+              Upload Logo
+              <input type="file" id="edit-logo-file" accept="image/*" hidden>
+            </label>
+            <span id="edit-logo-status" class="field-hint"></span>
+          </div>
+        </div>
+        <div class="setting-field">
+          <label>Channel Number</label>
+          <input type="number" id="edit-chno" placeholder="Auto" min="1">
+        </div>
+        <div class="setting-field">
+          <label>Title</label>
+          <input type="text" id="edit-title">
+        </div>
+        <div class="setting-field">
+          <label>Display Name Override</label>
+          <input type="text" id="edit-title-override" placeholder="Leave blank to use source title">
+          <span class="field-hint">Overrides the channel name in M3U, EPG, and guide output</span>
+        </div>
+        <div class="setting-field">
+          <label>Tags (comma-separated)</label>
+          <input type="text" id="edit-tags">
+        </div>
+        <div class="setting-field">
+          <label class="toggle-label">
+            <input type="checkbox" id="edit-active">
+            <span>Active</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-danger" id="edit-delete">Delete</button>
+        <button class="btn btn-ghost" id="edit-cancel">Cancel</button>
+        <button class="btn btn-primary" id="edit-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add M3U Source Modal -->
+  <div id="add-source-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Add M3U Source</h3>
+        <button class="btn-close" id="add-source-modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="setting-field">
+          <label>Name</label>
+          <input type="text" id="add-source-name" placeholder="My Playlist">
+        </div>
+        <div class="setting-field">
+          <label>Playlist URL or File Path</label>
+          <div style="display:flex;gap:6px">
+            <input type="text" id="add-source-url" placeholder="https://... or /path/to/file.m3u" style="flex:1">
+            <button class="btn btn-sm" id="add-source-browse" type="button">Browse</button>
+          </div>
+        </div>
+        <div id="file-browser" class="file-browser hidden">
+          <div class="file-browser-path" id="fb-path">/</div>
+          <div class="file-browser-list" id="fb-list"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="add-source-cancel">Cancel</button>
+        <button class="btn btn-primary" id="add-source-save">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add EPG Source Modal -->
+  <div id="add-epg-source-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Add EPG Source</h3>
+        <button class="btn-close" id="add-epg-source-modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="setting-field">
+          <label>Name</label>
+          <input type="text" id="add-epg-source-name" placeholder="My EPG Guide">
+        </div>
+        <div class="setting-field">
+          <label>XMLTV URL</label>
+          <input type="text" id="add-epg-source-url" placeholder="https://example.com/epg.xml">
+        </div>
+        <div class="setting-field">
+          <label>Linked M3U Source</label>
+          <select id="add-epg-source-m3u" class="filter-status" style="width:100%">
+            <option value="">-- Select M3U Source --</option>
+          </select>
+          <span class="field-hint">Channels are matched by tvg-id from this M3U source</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="add-epg-source-cancel">Cancel</button>
+        <button class="btn btn-primary" id="add-epg-source-save">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Player Modal -->
+  <div id="player-overlay" class="modal-overlay hidden">
+    <div class="modal player-modal">
+      <div class="modal-header">
+        <h3 id="player-title">Watch</h3>
+        <button class="btn-close" id="player-close">&times;</button>
+      </div>
+      <div class="player-wrap">
+        <video id="player-video" controls autoplay></video>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="/static/app.js?v=38"></script>
+</body>
+</html>

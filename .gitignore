@@ -1,0 +1,33 @@
+# Environment & secrets
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Runtime data
+logs/
+data/
+gluetun/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+.plan.md
+
+# OS
+.DS_Store
+Thumbs.db
