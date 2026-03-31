@@ -108,7 +108,7 @@ Client Request ──> /stream/{id}.m3u8
 
 ## API
 
-All endpoints are under `/api/`. See the [API blueprint](manifold/web/blueprints/api.py) for the full list. Key endpoints:
+All endpoints are under `/api/`. See the [router modules](manifold/web/routers/) for the full list. Key endpoints:
 
 - `GET /api/channels` -- List channels
 - `POST /api/m3u-sources` -- Add an M3U source
