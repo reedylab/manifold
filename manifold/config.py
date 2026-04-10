@@ -25,6 +25,7 @@ class Config:
     GLUETUN_CONTROL_URL = os.getenv("GLUETUN_CONTROL_URL", "")
     GLUETUN_CONTROL_USER = os.getenv("GLUETUN_CONTROL_USER", "")
     GLUETUN_CONTROL_PASS = os.getenv("GLUETUN_CONTROL_PASS", "")
+    SELENIUM_URL = os.getenv("SELENIUM_URL", "http://localhost:4444")
 
     PROGRAM_IMAGE_DIR = os.path.join(os.getenv("DATA_DIR", "/app/data"), "program_images")
 
