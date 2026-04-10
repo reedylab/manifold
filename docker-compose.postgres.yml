@@ -22,7 +22,7 @@ services:
       - VPN_TYPE=${VPN_TYPE:-wireguard}
       - WIREGUARD_PRIVATE_KEY=${WG_PRIVATE_KEY:?Set WG_PRIVATE_KEY in .env}
       - WIREGUARD_ADDRESSES=${WG_ADDRESSES:-10.70.17.30/32}
-      - SERVER_CITIES=${VPN_CITIES:-New York NY}
+      - SERVER_CITIES=${VPN_CITIES:-New York NY,Chicago IL,Atlanta GA,Dallas TX,Miami FL,Ashburn VA,Raleigh NC,Denver CO,Salt Lake City UT,Houston TX,Phoenix AZ,Secaucus NJ}
       - FIREWALL_OUTBOUND_SUBNETS=192.168.0.0/16,172.16.0.0/12,10.0.0.0/8
       - DNS_KEEP_NAMESERVER=on
       - CONTROL_SERVER=true
@@ -68,9 +68,9 @@ services:
       - gluetun
     restart: unless-stopped
 
-  selenium:
-    image: selenium/standalone-chromium:latest
-    container_name: manifold-selenium
+  selenium-uc:
+    build: ./selenium-uc
+    container_name: manifold-selenium-uc
     network_mode: service:gluetun
     shm_size: 2g
     depends_on:
@@ -80,7 +80,7 @@ services:
       driver: syslog
       options:
         syslog-address: "${SYSLOG_ADDRESS:-tcp://localhost:1514}"
-        tag: "manifold-selenium"
+        tag: "manifold-selenium-uc"
 
 networks:
   internal:
