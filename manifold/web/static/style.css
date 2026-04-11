@@ -239,26 +239,42 @@ body.theme-dark{
 
 /* Stats */
 .stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:18px}
-.stats-grid-4{grid-template-columns:repeat(4,1fr)}
+
+/* Two-column System tab: stacked CPU/RAM/Disk on the left, VPN block on the right */
+.stats-layout{display:grid;grid-template-columns:1fr 2fr;gap:16px;margin-bottom:18px}
+.stats-left{display:flex;flex-direction:column;gap:16px}
+.stats-right{display:flex;flex-direction:column;gap:16px}
+.stats-right .stat-card{flex:1}
+.stat-card-compact{padding:14px}
+.stat-card-compact .stat-card-header{margin-bottom:8px}
+.stat-card-compact .stat-card-header h4{font-size:14px}
+.stat-card-compact .stat-live{font-size:22px}
+.stat-card-compact .stat-chart{height:120px}
+@media(max-width:920px){
+  .stats-layout{grid-template-columns:1fr}
+}
+
+/* VPN card with inline server history */
+.vpn-stat-card{display:flex;flex-direction:column}
+.vpn-stat-card .stat-chart{height:170px}
 .vpn-stat-footer{display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:12px;gap:8px}
 .vpn-stat-footer .text-muted{font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;color:var(--text-muted)}
-.vpn-stat-actions{display:flex;gap:6px;flex-shrink:0}
-@media(max-width:1280px){.stats-grid-4{grid-template-columns:repeat(2,1fr)}}
 
-/* VPN history modal */
-.vpn-history-modal{max-width:1100px !important;width:95vw}
-.vpn-history-modal .modal-body{max-height:75vh;overflow:auto}
-.vpn-history-controls{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px}
-.vpn-history-controls label{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted)}
-.vpn-history-table-wrap{overflow-x:auto}
-.vpn-history-tbl{width:100%;font-size:13px}
-.vpn-history-tbl th,.vpn-history-tbl td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
-.vpn-history-tbl th{font-weight:600;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.vpn-history-section{margin-top:18px;border-top:1px solid var(--border);padding-top:14px;flex:1;display:flex;flex-direction:column;min-height:0}
+.vpn-history-controls{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap}
+.vpn-history-controls h5{margin:0;font-size:13px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;flex-shrink:0}
+.vpn-history-controls label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted)}
+.vpn-history-controls select{font-size:12px;padding:4px 8px}
+.vpn-history-controls .text-muted{margin-left:auto;font-size:12px}
+.vpn-history-table-wrap{overflow-x:auto;flex:1}
+.vpn-history-tbl{width:100%;font-size:12px}
+.vpn-history-tbl th,.vpn-history-tbl td{padding:6px 8px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
+.vpn-history-tbl th{font-weight:600;color:var(--text-muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em;background:var(--bg)}
 .vpn-history-tbl th.num,.vpn-history-tbl td.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono)}
 .vpn-history-tbl tr.is-current{background:rgba(88,166,255,.08)}
 .vpn-history-tbl tr.top-rank{background:rgba(63,185,80,.06)}
-.vpn-history-tbl .ip-cell{font-family:var(--mono);font-size:12px;color:var(--text-muted)}
-.vpn-history-tbl .rank-marker{display:inline-block;width:18px;text-align:center;margin-right:4px}
+.vpn-history-tbl .ip-cell{font-family:var(--mono);font-size:11px;color:var(--text-muted)}
+.vpn-history-tbl .rank-marker{display:inline-block;width:16px;text-align:center;margin-right:4px}
 .vpn-history-tbl .rank-current{color:var(--accent)}
 .vpn-history-tbl .rank-gold{color:var(--warn)}
 .stat-card{

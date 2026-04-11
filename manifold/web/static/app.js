@@ -939,6 +939,9 @@ async function loadStats(){
     const max = Math.max(observed * 1.2, 100);
     drawChart("vpn-chart", vpnHistory, "var(--ok)", max);
   } catch(e) {}
+
+  // Server history table (inline, always visible)
+  loadVpnHistory();
 }
 
 // VPN Server History modal
@@ -1002,19 +1005,8 @@ async function loadVpnHistory(sort){
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  const histBtn = document.getElementById("vpn-history-btn");
-  const histModal = document.getElementById("vpn-history-modal");
-  const histClose = document.getElementById("vpn-history-close");
   const histSort = document.getElementById("vpn-history-sort");
-  if (histBtn && histModal) {
-    histBtn.addEventListener("click", () => {
-      histModal.classList.remove("hidden");
-      loadVpnHistory();
-    });
-    histClose.addEventListener("click", () => histModal.classList.add("hidden"));
-    histModal.addEventListener("click", (e) => {
-      if (e.target === histModal) histModal.classList.add("hidden");
-    });
+  if (histSort) {
     histSort.addEventListener("change", () => loadVpnHistory());
   }
 });

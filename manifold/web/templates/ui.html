@@ -5,7 +5,7 @@
   <title>Manifold</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-  <link rel="stylesheet" href="/static/style.css?v=41" />
+  <link rel="stylesheet" href="/static/style.css?v=42" />
 </head>
 <body class="theme-dark">
   <!-- Header -->
@@ -292,27 +292,66 @@
 
       <!-- SYSTEM STATS -->
       <section id="view-stats" class="view">
-        <div class="stats-grid stats-grid-4">
-          <div class="stat-card">
-            <div class="stat-card-header"><h4>CPU</h4><span class="stat-live" id="cpu-live">--%</span></div>
-            <div class="stat-chart" id="cpu-chart"></div>
+        <div class="stats-layout">
+          <div class="stats-left">
+            <div class="stat-card stat-card-compact">
+              <div class="stat-card-header"><h4>CPU</h4><span class="stat-live" id="cpu-live">--%</span></div>
+              <div class="stat-chart" id="cpu-chart"></div>
+            </div>
+            <div class="stat-card stat-card-compact">
+              <div class="stat-card-header"><h4>Memory</h4><span class="stat-live" id="ram-live">--%</span></div>
+              <div class="stat-chart" id="ram-chart"></div>
+            </div>
+            <div class="stat-card stat-card-compact">
+              <div class="stat-card-header"><h4>Disk</h4><span class="stat-live" id="disk-live">--</span></div>
+              <div class="stat-chart" id="disk-chart"></div>
+            </div>
           </div>
-          <div class="stat-card">
-            <div class="stat-card-header"><h4>Memory</h4><span class="stat-live" id="ram-live">--%</span></div>
-            <div class="stat-chart" id="ram-chart"></div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-card-header"><h4>Disk</h4><span class="stat-live" id="disk-live">--</span></div>
-            <div class="stat-chart" id="disk-chart"></div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-card-header"><h4>VPN Latency</h4><span class="stat-live" id="vpn-live">--ms</span></div>
-            <div class="stat-chart" id="vpn-chart"></div>
-            <div class="vpn-stat-footer">
-              <span id="vpn-exit" class="text-muted">--</span>
-              <div class="vpn-stat-actions">
-                <button id="vpn-history-btn" class="btn btn-sm btn-ghost" title="See all servers used and rank by performance">History</button>
+          <div class="stats-right">
+            <div class="stat-card vpn-stat-card">
+              <div class="stat-card-header">
+                <h4>VPN Latency</h4>
+                <span class="stat-live" id="vpn-live">--ms</span>
+              </div>
+              <div class="stat-chart" id="vpn-chart"></div>
+              <div class="vpn-stat-footer">
+                <span id="vpn-exit" class="text-muted">--</span>
                 <button id="vpn-rotate-btn" class="btn btn-sm" title="Cycle VPN tunnel — picks a new server from your SERVER_CITIES list">&#x21BB; Rotate</button>
+              </div>
+              <div class="vpn-history-section">
+                <div class="vpn-history-controls">
+                  <h5>Server History</h5>
+                  <label>Sort:
+                    <select id="vpn-history-sort" class="filter-status">
+                      <option value="avg_rtt">Best avg latency</option>
+                      <option value="success_rate">Best success rate</option>
+                      <option value="last_seen">Most recently used</option>
+                      <option value="connected">Most time connected</option>
+                      <option value="total_samples">Most samples</option>
+                      <option value="first_seen">Oldest first</option>
+                    </select>
+                  </label>
+                  <span id="vpn-history-count" class="text-muted"></span>
+                </div>
+                <div class="vpn-history-table-wrap">
+                  <table class="tbl vpn-history-tbl" id="vpn-history-table">
+                    <thead>
+                      <tr>
+                        <th>City</th>
+                        <th>IP</th>
+                        <th>Org</th>
+                        <th class="num">Avg</th>
+                        <th class="num">Min</th>
+                        <th class="num">Max</th>
+                        <th class="num">Success</th>
+                        <th class="num">Samples</th>
+                        <th class="num">Connected</th>
+                        <th>Last seen</th>
+                      </tr>
+                    </thead>
+                    <tbody id="vpn-history-body"></tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
@@ -463,54 +502,10 @@
     </div>
   </div>
 
-  <!-- VPN Server History Modal -->
-  <div id="vpn-history-modal" class="modal-overlay hidden">
-    <div class="modal vpn-history-modal">
-      <div class="modal-header">
-        <h3>VPN Server History</h3>
-        <button class="btn-close" id="vpn-history-close">&times;</button>
-      </div>
-      <div class="modal-body">
-        <div class="vpn-history-controls">
-          <label>Sort by:
-            <select id="vpn-history-sort" class="filter-status">
-              <option value="avg_rtt">Best avg latency</option>
-              <option value="success_rate">Best success rate</option>
-              <option value="last_seen">Most recently used</option>
-              <option value="connected">Most time connected</option>
-              <option value="total_samples">Most samples</option>
-              <option value="first_seen">Oldest first</option>
-            </select>
-          </label>
-          <span id="vpn-history-count" class="text-muted"></span>
-        </div>
-        <div class="vpn-history-table-wrap">
-          <table class="tbl vpn-history-tbl" id="vpn-history-table">
-            <thead>
-              <tr>
-                <th>City</th>
-                <th>IP</th>
-                <th>Org</th>
-                <th class="num">Avg</th>
-                <th class="num">Min</th>
-                <th class="num">Max</th>
-                <th class="num">Success</th>
-                <th class="num">Samples</th>
-                <th class="num">Connected</th>
-                <th>Last seen</th>
-              </tr>
-            </thead>
-            <tbody id="vpn-history-body"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- Toast -->
   <div id="toast" class="toast hidden"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-  <script src="/static/app.js?v=40"></script>
+  <script src="/static/app.js?v=41"></script>
 </body>
 </html>
