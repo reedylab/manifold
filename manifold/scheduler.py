@@ -1,10 +1,22 @@
 """APScheduler for periodic M3U/XMLTV regen and cleanup."""
 
 import logging
+import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 logger = logging.getLogger(__name__)
+
+# Cron jobs (currently just vpn_scheduled_rotate) interpret HH:MM in this
+# timezone. Default is Eastern Time so "04:00" means 4 AM ET regardless of
+# whether the host runs in UTC. Override via MANIFOLD_CRON_TZ env var.
+_CRON_TZ_NAME = os.environ.get("MANIFOLD_CRON_TZ", "America/New_York")
+try:
+    from zoneinfo import ZoneInfo
+    CRON_TZ = ZoneInfo(_CRON_TZ_NAME)
+except Exception as e:
+    logger.warning("Falling back to UTC for cron jobs (%s lookup failed: %s)", _CRON_TZ_NAME, e)
+    CRON_TZ = None
 
 _scheduler = None
 
@@ -138,15 +150,16 @@ def start_scheduler(app):
         _scheduler.add_job(vpn_rotate_job, "interval", seconds=60,
                            id="vpn_rotate", name="VPN Auto-Rotate Check",
                            replace_existing=True)
-        # Scheduled rotate fires once a day at HH:MM. Default to 04:00 if no
-        # setting exists, so the task is always visible in the UI for users
-        # in VPN mode and they can adjust it from the task card's time picker.
+        # Scheduled rotate fires once a day at HH:MM in CRON_TZ (Eastern by
+        # default). Default to 04:00 if no setting exists so the task is always
+        # visible in the UI for VPN-mode users and they can adjust it from the
+        # task card's time picker.
         sched_time = (get_setting("vpn_scheduled_rotate_time", "") or "").strip() or "04:00"
         try:
             hh, mm = sched_time.split(":")
             _scheduler.add_job(
                 vpn_scheduled_rotate_job,
-                CronTrigger(hour=int(hh), minute=int(mm)),
+                CronTrigger(hour=int(hh), minute=int(mm), timezone=CRON_TZ),
                 id="vpn_scheduled_rotate", name="Scheduled VPN Rotate",
                 replace_existing=True,
             )
@@ -238,7 +251,7 @@ def update_vpn_scheduled_rotate(time_str: str) -> bool:
         return True
     try:
         hh, mm = time_str.split(":")
-        trigger = CronTrigger(hour=int(hh), minute=int(mm))
+        trigger = CronTrigger(hour=int(hh), minute=int(mm), timezone=CRON_TZ)
     except Exception as e:
         logger.warning("Bad vpn_scheduled_rotate time '%s': %s", time_str, e)
         return False
