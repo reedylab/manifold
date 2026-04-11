@@ -13,7 +13,7 @@ services:
     restart: unless-stopped
 
   gluetun:
-    image: qmcgaw/gluetun:v3.36.0
+    image: qmcgaw/gluetun:v3.41.1
     container_name: manifold-vpn
     cap_add:
       - NET_ADMIN
@@ -22,9 +22,10 @@ services:
       - VPN_TYPE=${VPN_TYPE:-wireguard}
       - WIREGUARD_PRIVATE_KEY=${WG_PRIVATE_KEY:?Set WG_PRIVATE_KEY in .env}
       - WIREGUARD_ADDRESSES=${WG_ADDRESSES:-10.70.17.30/32}
-      - SERVER_CITIES=${VPN_CITIES:-New York NY}
+      - SERVER_CITIES=${VPN_CITIES:-Atlanta GA,Raleigh NC,Ashburn VA}
       - FIREWALL_OUTBOUND_SUBNETS=192.168.0.0/16,172.16.0.0/12,10.0.0.0/8
       - DNS_KEEP_NAMESERVER=on
+      - UPDATER_PERIOD=24h
       - CONTROL_SERVER=true
       - CONTROL_SERVER_USERNAME=${VPN_CONTROL_USER:-admin}
       - CONTROL_SERVER_PASSWORD=${VPN_CONTROL_PASS:?Set VPN_CONTROL_PASS in .env}
