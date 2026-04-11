@@ -1,45 +1,21 @@
 services:
-  gluetun:
-    image: qmcgaw/gluetun:v3.36.0
-    container_name: manifold-vpn
-    cap_add:
-      - NET_ADMIN
-    environment:
-      - VPN_SERVICE_PROVIDER=${VPN_PROVIDER:-mullvad}
-      - VPN_TYPE=${VPN_TYPE:-wireguard}
-      - WIREGUARD_PRIVATE_KEY=${WG_PRIVATE_KEY:?Set WG_PRIVATE_KEY in .env}
-      - WIREGUARD_ADDRESSES=${WG_ADDRESSES:-10.70.17.30/32}
-      - SERVER_CITIES=${VPN_CITIES:-New York NY}
-      - FIREWALL_OUTBOUND_SUBNETS=192.168.0.0/16,172.16.0.0/12,10.0.0.0/8
-      - DNS_KEEP_NAMESERVER=on
-      - CONTROL_SERVER=true
-      - CONTROL_SERVER_USERNAME=${VPN_CONTROL_USER:-admin}
-      - CONTROL_SERVER_PASSWORD=${VPN_CONTROL_PASS:?Set VPN_CONTROL_PASS in .env}
-    ports:
-      - "40000:40000"
-    volumes:
-      - ./gluetun:/gluetun
-    restart: unless-stopped
-
   manifold:
     build: .
     container_name: manifold
-    network_mode: service:gluetun
     env_file: .env
     environment:
       - PG_HOST=${PG_HOST:?Set PG_HOST in .env}
       - PG_PORT=${PG_PORT:-5432}
+      - PG_DB=${PG_DB:-manifold}
       - PG_USER=${PG_USER:-manifold}
       - PG_PASS=${PG_PASS:?Set PG_PASS in .env}
-      - PG_DB=${PG_DB:-manifold}
       - BRIDGE_HOST=${BRIDGE_HOST:?Set BRIDGE_HOST in .env}
       - BRIDGE_PORT=${BRIDGE_PORT:-8080}
       - MANIFOLD_HOST=${MANIFOLD_HOST:?Set MANIFOLD_HOST in .env}
       - MANIFOLD_PORT=${MANIFOLD_PORT:-40000}
-      - GLUETUN_CONTROL_URL=http://127.0.0.1:8000
-      - GLUETUN_CONTROL_USER=${VPN_CONTROL_USER:-admin}
-      - GLUETUN_CONTROL_PASS=${VPN_CONTROL_PASS}
       - PYTHONUNBUFFERED=1
+    ports:
+      - "40000:40000"
     volumes:
       - output:/app/output
       - logos:/app/logos
@@ -48,20 +24,10 @@ services:
       - ${LOG_PATH:-./logs}:/app/logs
       - ${DATA_PATH:-./data}:/app/data
       - ${MEDIA_PATH:-/mnt}:/browse:ro
-    depends_on:
-      - gluetun
     restart: unless-stopped
 
 volumes:
   output:
-    external: true
-    name: manifold_output
   logos:
-    external: true
-    name: manifold_logos
   streams:
-    external: true
-    name: manifold_streams
   bumps:
-    external: true
-    name: manifold_bumps
