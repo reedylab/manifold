@@ -42,6 +42,9 @@ async def lifespan(app: FastAPI):
                 ("channel_number", "INTEGER"),
                 ("title_override", "VARCHAR"),
                 ("stale_since", "TIMESTAMPTZ"),
+                ("expires_at", "TIMESTAMPTZ"),
+                ("last_refreshed_at", "TIMESTAMPTZ"),
+                ("last_accessed_at", "TIMESTAMPTZ"),
             ]:
                 if col not in manifest_cols:
                     conn.execute(text(f"ALTER TABLE manifests ADD COLUMN {col} {coltype}"))

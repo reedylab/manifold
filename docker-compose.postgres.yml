@@ -75,6 +75,8 @@ services:
     shm_size: 2g
     depends_on:
       - gluetun
+    volumes:
+      - selenium_profile:/data
     restart: unless-stopped
     logging:
       driver: syslog
@@ -101,3 +103,6 @@ volumes:
   pgdata:
     external: true
     name: manifold_pgdata
+  selenium_profile:
+    external: true
+    name: manifold_selenium_profile

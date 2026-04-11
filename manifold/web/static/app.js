@@ -1631,9 +1631,21 @@ function renderResolverQueue(batch){
     const url = r.url || "";
     const truncUrl = url.length > 80 ? url.substring(0, 80) + "..." : url;
 
+    // Expiry hint — shows when the next refresh will happen
+    let expiryHint = "";
+    if(r.status === "done" && r.expires_at){
+      const exp = new Date(r.expires_at).getTime();
+      const mins = Math.round((exp - Date.now()) / 60000);
+      if(mins > 5) expiryHint = `<span class="res-expiry" title="Auto-refresh scheduled">refreshes in ${mins - 5}m</span>`;
+      else if(mins > 0) expiryHint = `<span class="res-expiry res-expiry-soon" title="Refresh due">refreshing soon</span>`;
+      else expiryHint = `<span class="res-expiry res-expiry-stale" title="Token expired">refresh overdue</span>`;
+    } else if(r.status === "done"){
+      expiryHint = `<span class="res-expiry res-expiry-unknown" title="Unknown expiry — will auto-refresh on failure">token unknown</span>`;
+    }
+
     let actions = `<button class="btn btn-sm-danger" data-res-remove="${i}" title="Remove">&times;</button>`;
     if(r.status === "done" && r.manifest_id){
-      actions = `<button class="btn btn-sm-watch" data-res-play="${r.manifest_id}" data-res-play-title="${title}" data-res-play-url="${url}" title="Test Stream">&#9654;</button> ` + actions;
+      actions = `<button class="btn btn-sm-watch" data-res-play="${r.manifest_id}" data-res-play-title="${title}" data-res-play-url="${url}" title="Test Stream">&#9654;</button> <button class="btn btn-sm" data-res-refresh="${r.manifest_id}" title="Refresh token now">&#8635;</button> ` + actions;
     }
     if(r.status === "failed"){
       actions = `<button class="btn btn-sm" data-res-retry="${i}" title="Retry">&#8635;</button> ` + actions;
@@ -1641,7 +1653,7 @@ function renderResolverQueue(batch){
 
     return `<tr>
       <td><span class="res-status ${statusClass}" title="${statusTitle}"></span></td>
-      <td>${title}</td>
+      <td>${title}${expiryHint ? "<br>" + expiryHint : ""}</td>
       <td class="res-url" title="${url}">${truncUrl}</td>
       <td>${actions}</td>
     </tr>`;
@@ -1655,6 +1667,18 @@ function renderResolverQueue(batch){
     btn.addEventListener("click", async ()=>{
       await apiPost(`/resolve/retry/${btn.dataset.resRetry}`);
       startResolverPolling();
+    });
+  });
+  $$("[data-res-refresh]", body).forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      const mid = btn.dataset.resRefresh;
+      btn.disabled = true;
+      try {
+        const r = await apiPost(`/resolve/refresh/${mid}`);
+        if(r.ok) toast("Refresh queued", "info");
+        else toast(r.error || "Refresh failed", "error");
+      } catch(e) { toast("Refresh failed", "error"); }
+      setTimeout(()=> { btn.disabled = false; loadResolver(); }, 3000);
     });
   });
   $$("[data-res-remove]", body).forEach(btn=>{

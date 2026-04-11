@@ -1,7 +1,12 @@
 """Headless browser sidecar using undetected-chromedriver.
 
+Uses a persistent Chrome session with a profile dir, so cookies, localStorage,
+and fingerprint persist across captures. To target sites we look like one
+returning user, not a bot army.
+
 Exposes:
   POST /capture {"url": str, "timeout": int, "switch_iframe": bool}
+  POST /restart   — forcibly recycle the browser
   GET  /health
 """
 
@@ -10,6 +15,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 
 from fastapi import FastAPI
@@ -29,6 +35,13 @@ MATCH_PATTERNS = ("m3u8", "application/x-mpegurl", "application/vnd.apple.mpegur
 INCLUDE_TYPES = ("Media", "Fetch", "XHR", "Document", "Other")
 JSON_STREAM_PATTERNS = ("ngtv.io", "/api/", "/media/", "/stream", "anvato", "uplynk")
 
+# Persistent browser singleton
+_PROFILE_DIR = os.getenv("CHROME_PROFILE_DIR", "/data/chrome-profile")
+_RECYCLE_AFTER = int(os.getenv("CHROME_RECYCLE_AFTER", "50"))  # captures
+_browser_lock = threading.RLock()
+_browser = None
+_capture_count = 0
+
 
 class CaptureRequest(BaseModel):
     url: str
@@ -36,13 +49,10 @@ class CaptureRequest(BaseModel):
     switch_iframe: bool = True
 
 
-def _get_browser():
-    """Build an undetected Chrome instance with anti-bot flags.
-
-    Runs in NON-headless mode under an Xvfb virtual display — headless Chrome
-    is reliably detected by PerimeterX/Akamai even with uc patching.
-    """
+def _make_browser():
+    """Build a fresh undetected Chrome instance with persistent profile dir."""
     options = uc.ChromeOptions()
+    # Anti-bot flags
     options.add_argument("--no-sandbox")
     options.add_argument("--no-zygote")
     options.add_argument("--disable-dev-shm-usage")
@@ -53,22 +63,23 @@ def _get_browser():
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-software-rasterizer")
     options.add_argument("--mute-audio")
-    options.add_argument("--incognito")
     options.add_argument("--autoplay-policy=no-user-gesture-required")
     options.add_argument("--disable-site-isolation-trials")
     options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+    # Persistence — note: NO --incognito (it would defeat the user-data-dir)
+    os.makedirs(_PROFILE_DIR, exist_ok=True)
+    options.add_argument(f"--user-data-dir={_PROFILE_DIR}")
 
     options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
     chrome_binary = os.getenv("CHROME_BINARY", "/usr/bin/google-chrome")
     options.binary_location = chrome_binary
 
-    # Detect the installed Chrome major version so uc downloads a matching driver
+    # Detect installed Chrome major version so uc downloads a matching driver
     version_main = None
     try:
         import subprocess
         out = subprocess.check_output([chrome_binary, "--version"], text=True).strip()
-        # e.g. "Google Chrome 131.0.6778.85"
         m = re.search(r"(\d+)\.\d+\.\d+\.\d+", out)
         if m:
             version_main = int(m.group(1))
@@ -76,12 +87,66 @@ def _get_browser():
     except Exception as e:
         logger.warning("Could not detect Chrome version: %s", e)
 
-    browser = uc.Chrome(
+    logger.info("Starting persistent Chrome (profile=%s)", _PROFILE_DIR)
+    return uc.Chrome(
         options=options,
         use_subprocess=True,
         version_main=version_main,
     )
-    return browser
+
+
+def _get_browser():
+    """Return the persistent browser instance, creating or recreating if needed."""
+    global _browser
+    if _browser is None:
+        _browser = _make_browser()
+        return _browser
+    # Health check — if dead, recreate
+    try:
+        _ = _browser.current_url
+        return _browser
+    except Exception:
+        logger.warning("Browser session unresponsive, recreating")
+        try:
+            _browser.quit()
+        except Exception:
+            pass
+        _browser = _make_browser()
+        return _browser
+
+
+def _release_browser():
+    """Reset state between captures: drain logs, return to default frame, blank page.
+
+    Cookies and localStorage are preserved (the user-data-dir is on disk).
+    """
+    global _browser, _capture_count
+    if _browser is None:
+        return
+    try:
+        _browser.switch_to.default_content()
+    except Exception:
+        pass
+    try:
+        # Drain performance logs so the next capture starts with a clean buffer
+        _browser.get_log("performance")
+    except Exception:
+        pass
+    try:
+        # Free DOM/JS state but keep cookies on disk
+        _browser.get("about:blank")
+    except Exception:
+        pass
+
+    _capture_count += 1
+    if _capture_count >= _RECYCLE_AFTER:
+        logger.info("Recycle threshold reached (%d captures), restarting browser", _capture_count)
+        try:
+            _browser.quit()
+        except Exception:
+            pass
+        _browser = None
+        _capture_count = 0
 
 
 def _find_m3u8_in_json(obj):
@@ -264,57 +329,77 @@ def _decode_body(result):
 
 @app.get("/health")
 def health():
-    return {"ready": True}
+    return {"ready": True, "browser_alive": _browser is not None, "capture_count": _capture_count}
+
+
+@app.post("/restart")
+def restart():
+    """Forcibly recycle the browser instance."""
+    global _browser, _capture_count
+    with _browser_lock:
+        if _browser:
+            try:
+                _browser.quit()
+            except Exception:
+                pass
+        _browser = None
+        _capture_count = 0
+    return {"ok": True}
 
 
 @app.post("/capture")
 def capture(req: CaptureRequest):
-    """Navigate to a URL and capture an m3u8 manifest."""
-    browser = None
-    try:
-        logger.info("Starting capture: %s (timeout=%ds)", req.url, req.timeout)
-        browser = _get_browser()
-        browser.get(req.url)
+    """Navigate to a URL and capture an m3u8 manifest using the persistent session."""
+    with _browser_lock:
+        try:
+            logger.info("Starting capture: %s (timeout=%ds, count=%d)",
+                        req.url, req.timeout, _capture_count)
+            browser = _get_browser()
+            browser.get(req.url)
 
-        if req.switch_iframe:
-            try:
-                WebDriverWait(browser, 10).until(
-                    EC.frame_to_be_available_and_switch_to_it((By.TAG_NAME, "iframe"))
-                )
-                logger.info("Switched to iframe")
-            except Exception:
-                logger.debug("No iframe, continuing in main frame")
+            if req.switch_iframe:
+                try:
+                    WebDriverWait(browser, 10).until(
+                        EC.frame_to_be_available_and_switch_to_it((By.TAG_NAME, "iframe"))
+                    )
+                    logger.info("Switched to iframe")
+                except Exception:
+                    logger.debug("No iframe, continuing in main frame")
 
-        result = _wait_for_manifest(browser, timeout=req.timeout)
-        if not result:
-            return {"ok": False, "error": "No manifest captured within timeout"}
+            result = _wait_for_manifest(browser, timeout=req.timeout)
+            if not result:
+                return {"ok": False, "error": "No manifest captured within timeout"}
 
-        body_text = _decode_body(result)
-        if not body_text:
+            body_text = _decode_body(result)
+            if not body_text:
+                return {
+                    "ok": False,
+                    "error": f"Captured resource is not HLS: {result.get('url')} (MIME: {result.get('mime')})",
+                }
+
+            ua = browser.execute_script("return navigator.userAgent")
+
             return {
-                "ok": False,
-                "error": f"Captured resource is not HLS: {result.get('url')} (MIME: {result.get('mime')})",
+                "ok": True,
+                "manifest_url": result["url"],
+                "body": body_text,
+                "mime": result.get("mime"),
+                "headers": result.get("resp_headers", {}),
+                "heartbeat": result.get("heartbeat"),
+                "user_agent": ua,
             }
 
-        ua = browser.execute_script("return navigator.userAgent")
-
-        return {
-            "ok": True,
-            "manifest_url": result["url"],
-            "body": body_text,
-            "mime": result.get("mime"),
-            "headers": result.get("resp_headers", {}),
-            "heartbeat": result.get("heartbeat"),
-            "user_agent": ua,
-        }
-
-    except Exception as e:
-        logger.exception("Capture failed for %s", req.url)
-        return {"ok": False, "error": str(e)}
-
-    finally:
-        if browser:
+        except Exception as e:
+            logger.exception("Capture failed for %s", req.url)
+            # Force a recycle on errors — browser may be in a bad state
+            global _browser
             try:
-                browser.quit()
+                if _browser:
+                    _browser.quit()
             except Exception:
                 pass
+            _browser = None
+            return {"ok": False, "error": str(e)}
+
+        finally:
+            _release_browser()

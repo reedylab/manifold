@@ -19,7 +19,11 @@ def start_scheduler(app):
     from manifold.services.image_enricher import ImageEnricherService
     from manifold.services.m3u_ingest import M3uIngestService
     from manifold.services.epg_ingest import EpgIngestService
+    from manifold.services.manifest_resolver import ManifestResolverService
     from manifold.config import get_setting
+    from manifold.database import get_session
+    from manifold.models.manifest import Manifest
+    from datetime import datetime, timezone, timedelta
 
     _scheduler = BackgroundScheduler(daemon=True)
 
@@ -70,6 +74,53 @@ def start_scheduler(app):
         except Exception as e:
             logger.error("EPG refresh failed: %s", e)
 
+    def resolved_refresh_job():
+        """Refresh resolved manifests that are actively being watched and near expiry.
+
+        Demand-driven: only touches manifests with recent client access. Dormant
+        channels are left alone — no upstream traffic, no bot-wall risk.
+        The 403 safety net in the stream router handles wake-from-dormant cases.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            soon = now + timedelta(minutes=5)
+            cooldown = now - timedelta(minutes=3)
+            watching_window = now - timedelta(minutes=10)
+
+            with get_session() as session:
+                rows = (
+                    session.query(Manifest.id)
+                    .filter(Manifest.tags.contains(["resolved"]))
+                    .filter(Manifest.active == True)
+                    .filter(Manifest.last_accessed_at.isnot(None))
+                    .filter(Manifest.last_accessed_at > watching_window)
+                    .filter(
+                        (Manifest.expires_at.is_(None)) |
+                        (Manifest.expires_at < soon)
+                    )
+                    .filter(
+                        (Manifest.last_refreshed_at.is_(None)) |
+                        (Manifest.last_refreshed_at < cooldown)
+                    )
+                    .limit(5)
+                    .all()
+                )
+                ids = [r[0] for r in rows]
+            if not ids:
+                return
+            logger.info("Demand refresh: %d manifests due", len(ids))
+            succeeded = failed = 0
+            for mid in ids:
+                result = ManifestResolverService.refresh_manifest(mid)
+                if result.get("ok"):
+                    succeeded += 1
+                else:
+                    failed += 1
+                    logger.warning("Refresh failed for %s: %s", mid, result.get("error"))
+            logger.info("Demand refresh complete: %d succeeded, %d failed", succeeded, failed)
+        except Exception as e:
+            logger.exception("Demand refresh job error: %s", e)
+
     regen_minutes = int(get_setting("scheduler_regen_minutes", "5") or "5")
     cleanup_hours = int(get_setting("scheduler_cleanup_hours", "1") or "1")
 
@@ -99,6 +150,12 @@ def start_scheduler(app):
     epg_refresh_hours = int(get_setting("scheduler_epg_refresh_hours", "12") or "12")
     _scheduler.add_job(epg_refresh_job, "interval", hours=epg_refresh_hours,
                        id="epg_refresh", name="EPG Data Refresh",
+                       replace_existing=True)
+
+    # Demand-driven refresh: only touches manifests with recent client access.
+    # If you're not watching, no upstream traffic, no bot-wall risk.
+    _scheduler.add_job(resolved_refresh_job, "interval", seconds=60,
+                       id="resolved_refresh", name="Resolved Manifest Refresh (demand-driven)",
                        replace_existing=True)
 
     _scheduler.start()
