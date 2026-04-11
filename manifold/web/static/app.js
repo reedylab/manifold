@@ -922,7 +922,7 @@ async function loadStats(){
   drawChart("ram-chart", ramHistory, "var(--accent-2)", 100);
   drawDisk("disk-chart", s.disk_percent, s.disk_used_gb, s.disk_total_gb);
 
-  // VPN latency
+  // VPN / Network latency — same chart, label depends on summary.mode
   try {
     const v = await api("/vpn/history?minutes=60");
     const series = (v.samples || [])
@@ -931,17 +931,28 @@ async function loadStats(){
     vpnHistory.length = 0;
     vpnHistory.push(...series.slice(-MAX_POINTS));
     const sum = v.summary || {};
+    const mode = sum.mode || "vpn";
+    const isVpn = mode === "vpn";
+
+    // Title + footer text + rotate/history visibility key off mode
+    $("#vpn-card-title").textContent = isVpn ? "VPN Latency" : "Network Latency";
     $("#vpn-live").textContent = sum.current_rtt_ms != null ? sum.current_rtt_ms.toFixed(1) + "ms" : "--ms";
-    const exitText = sum.current_city ? `${sum.current_city} · ${sum.current_ip || ""}` : "--";
-    $("#vpn-exit").textContent = exitText;
+    if (isVpn) {
+      $("#vpn-exit").textContent = sum.current_city ? `${sum.current_city} · ${sum.current_ip || ""}` : "--";
+    } else {
+      $("#vpn-exit").textContent = "Direct connection";
+    }
+    $("#vpn-rotate-btn").style.display = isVpn ? "" : "none";
+    $("#vpn-history-section").style.display = isVpn ? "" : "none";
+
     // Auto-scale Y to ~120% of observed max (min 100ms) so spikes are visible
     const observed = vpnHistory.length ? Math.max(...vpnHistory) : 0;
     const max = Math.max(observed * 1.2, 100);
     drawChart("vpn-chart", vpnHistory, "var(--ok)", max);
-  } catch(e) {}
 
-  // Server history table (inline, always visible)
-  loadVpnHistory();
+    // Server history table only makes sense in VPN mode
+    if (isVpn) loadVpnHistory();
+  } catch(e) {}
 }
 
 // VPN Server History modal

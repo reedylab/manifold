@@ -5,7 +5,7 @@
   <title>Manifold</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-  <link rel="stylesheet" href="/static/style.css?v=42" />
+  <link rel="stylesheet" href="/static/style.css?v=43" />
 </head>
 <body class="theme-dark">
   <!-- Header -->
@@ -310,7 +310,7 @@
           <div class="stats-right">
             <div class="stat-card vpn-stat-card">
               <div class="stat-card-header">
-                <h4>VPN Latency</h4>
+                <h4 id="vpn-card-title">VPN Latency</h4>
                 <span class="stat-live" id="vpn-live">--ms</span>
               </div>
               <div class="stat-chart" id="vpn-chart"></div>
@@ -318,7 +318,7 @@
                 <span id="vpn-exit" class="text-muted">--</span>
                 <button id="vpn-rotate-btn" class="btn btn-sm" title="Cycle VPN tunnel — picks a new server from your SERVER_CITIES list">&#x21BB; Rotate</button>
               </div>
-              <div class="vpn-history-section">
+              <div class="vpn-history-section" id="vpn-history-section">
                 <div class="vpn-history-controls">
                   <h5>Server History</h5>
                   <label>Sort:
@@ -506,6 +506,6 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-  <script src="/static/app.js?v=41"></script>
+  <script src="/static/app.js?v=42"></script>
 </body>
 </html>

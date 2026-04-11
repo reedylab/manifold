@@ -188,11 +188,21 @@ def get_history(minutes: int = 60) -> list[dict]:
 
 
 def get_summary() -> dict:
-    """Compute current/min/avg/max RTT plus current exit info."""
+    """Compute current/min/avg/max RTT plus current exit info.
+
+    The `mode` field tells the UI whether this manifold instance is running
+    behind gluetun ("vpn") or on a direct/local network ("local"). When
+    local, the rotate button and server history table should be hidden and
+    the card title relabeled to "Network Latency".
+    """
+    from manifold.config import Config
+    mode = "vpn" if Config().GLUETUN_CONTROL_URL else "local"
+
     with _lock:
         recent = list(_samples)[-60:]  # last hour at 1/min
     if not recent:
         return {
+            "mode": mode,
             "current_rtt_ms": None,
             "min_rtt_ms": None,
             "avg_rtt_ms": None,
@@ -205,6 +215,7 @@ def get_summary() -> dict:
     rtts = [s["rtt_ms"] for s in recent if s["rtt_ms"] is not None]
     latest = recent[-1]
     summary = {
+        "mode": mode,
         "current_rtt_ms": latest["rtt_ms"],
         "current_ip": latest["ip"],
         "current_city": latest["city"],
