@@ -164,8 +164,15 @@ def vpn_status():
         if cfg.GLUETUN_CONTROL_USER:
             auth = (cfg.GLUETUN_CONTROL_USER, cfg.GLUETUN_CONTROL_PASS)
 
-        r = http_requests.get(f"{cfg.GLUETUN_CONTROL_URL}/v1/openvpn/status", auth=auth, timeout=3)
-        status_data = r.json()
+        # /v1/vpn/status is the generic endpoint (works for both WireGuard and OpenVPN).
+        # Older gluetun versions only had /v1/openvpn/status — try generic first.
+        try:
+            r = http_requests.get(f"{cfg.GLUETUN_CONTROL_URL}/v1/vpn/status", auth=auth, timeout=3)
+            r.raise_for_status()
+            status_data = r.json()
+        except Exception:
+            r = http_requests.get(f"{cfg.GLUETUN_CONTROL_URL}/v1/openvpn/status", auth=auth, timeout=3)
+            status_data = r.json()
         vpn_status = status_data.get("status", "unknown")
 
         ip = ""
