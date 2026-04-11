@@ -55,31 +55,122 @@ def _ping_rtt(target: str = "1.1.1.1", timeout: int = 2) -> float | None:
         return None
 
 
-def _fetch_exit_info() -> tuple[str, str]:
-    """Return (public_ip, city) from gluetun's /v1/publicip/ip endpoint."""
+def _fetch_exit_info() -> dict:
+    """Return full exit info dict from gluetun's /v1/publicip/ip endpoint.
+
+    Returns {ip, city, country, hostname, org}. Empty strings for missing
+    fields. Returns {} on error.
+    """
     base, auth = _get_auth_and_url()
     if not base:
-        return ("", "")
+        return {}
     try:
         r = http_requests.get(f"{base}/v1/publicip/ip", auth=auth, timeout=3)
         d = r.json()
-        return (d.get("public_ip", ""), d.get("city") or d.get("region", ""))
+        return {
+            "ip": d.get("public_ip", "") or "",
+            "city": (d.get("city") or d.get("region") or ""),
+            "country": d.get("country", "") or "",
+            "hostname": d.get("hostname", "") or "",
+            "org": d.get("organization", "") or "",
+        }
     except Exception:
-        return ("", "")
+        return {}
 
 
 def sample_latency():
-    """Take one latency sample and append to the rolling history."""
+    """Take one latency sample and append to the rolling history.
+
+    Also upserts the per-server aggregate row in the vpn_servers table so
+    we can compute long-term performance stats per Mullvad endpoint.
+    """
     rtt = _ping_rtt()
-    ip, city = _fetch_exit_info()
+    info = _fetch_exit_info()
+    ip = info.get("ip", "")
+    city = info.get("city", "")
+    now = datetime.now(timezone.utc)
+
     sample = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": now.isoformat(),
         "rtt_ms": rtt,
         "ip": ip,
         "city": city,
     }
     with _lock:
         _samples.append(sample)
+
+    # Persistent per-server aggregation
+    if ip:
+        try:
+            _upsert_server_row(now, info, rtt)
+        except Exception as e:
+            logger.warning("[VPN-MONITOR] vpn_servers upsert failed: %s", e)
+
+
+def _upsert_server_row(now, info: dict, rtt: float | None):
+    """Insert or update the vpn_servers row for the current exit IP."""
+    from manifold.database import get_session
+    from manifold.models.vpn_server import VpnServer
+
+    ip = info["ip"]
+    with get_session() as session:
+        row = session.query(VpnServer).filter_by(ip=ip).first()
+        if row is None:
+            # First time seeing this IP — also mark all other rows as not current
+            session.query(VpnServer).filter(VpnServer.is_current == True).update(
+                {"is_current": False}
+            )
+            row = VpnServer(
+                ip=ip,
+                city=info.get("city") or "",
+                country=info.get("country") or "",
+                hostname=info.get("hostname") or "",
+                org=info.get("org") or "",
+                first_seen_at=now,
+                last_seen_at=now,
+                last_sample_at=now,
+                total_samples=1,
+                successful_samples=1 if rtt is not None else 0,
+                min_rtt_ms=rtt,
+                max_rtt_ms=rtt,
+                sum_rtt_ms=rtt,
+                total_seconds_connected=0,
+                is_current=True,
+            )
+            session.add(row)
+            return
+
+        # Existing row — refresh enrichment fields if they were missing originally
+        if not row.hostname and info.get("hostname"):
+            row.hostname = info["hostname"]
+        if not row.org and info.get("org"):
+            row.org = info["org"]
+        if not row.country and info.get("country"):
+            row.country = info["country"]
+
+        # If a different server is currently marked, swap the flag
+        if not row.is_current:
+            session.query(VpnServer).filter(VpnServer.is_current == True).update(
+                {"is_current": False}
+            )
+            row.is_current = True
+
+        # Accumulate
+        row.last_seen_at = now
+        row.total_samples += 1
+        if rtt is not None:
+            row.successful_samples += 1
+            row.sum_rtt_ms = (row.sum_rtt_ms or 0) + rtt
+            row.min_rtt_ms = rtt if row.min_rtt_ms is None else min(row.min_rtt_ms, rtt)
+            row.max_rtt_ms = rtt if row.max_rtt_ms is None else max(row.max_rtt_ms, rtt)
+
+        # Time delta since last sample on THIS server (avoids inflating across gaps)
+        if row.last_sample_at is not None:
+            delta = (now - row.last_sample_at).total_seconds()
+            # Cap at 5 minutes — anything bigger is probably a restart/rotation gap
+            if 0 < delta < 300:
+                row.total_seconds_connected += int(delta)
+        row.last_sample_at = now
 
 
 def get_history(minutes: int = 60) -> list[dict]:
@@ -141,7 +232,9 @@ def rotate_vpn(reason: str = "manual") -> dict:
     if not base:
         return {"ok": False, "error": "GLUETUN_CONTROL_URL not configured"}
 
-    old_ip, old_city = _fetch_exit_info()
+    before = _fetch_exit_info()
+    old_ip = before.get("ip", "")
+    old_city = before.get("city", "")
     logger.info("[VPN-MONITOR] Rotating VPN (%s) — current: %s in %s", reason, old_ip, old_city)
 
     try:
@@ -163,7 +256,9 @@ def rotate_vpn(reason: str = "manual") -> dict:
         new_ip, new_city = "", ""
         for _ in range(30):
             time.sleep(1)
-            new_ip, new_city = _fetch_exit_info()
+            after = _fetch_exit_info()
+            new_ip = after.get("ip", "")
+            new_city = after.get("city", "")
             if new_ip and new_ip != old_ip:
                 break
 
@@ -187,6 +282,64 @@ def rotate_vpn(reason: str = "manual") -> dict:
     except Exception as e:
         logger.exception("[VPN-MONITOR] Rotate failed")
         return {"ok": False, "error": str(e)}
+
+
+def list_servers(sort: str = "avg_rtt", order: str = None, limit: int = 50) -> list[dict]:
+    """Return all known VPN servers with computed avg + success rate.
+
+    Sort options:
+      - avg_rtt: lowest avg latency first (asc)
+      - last_seen: most recently used first (desc)
+      - total_samples: most heavily used first (desc)
+      - success_rate: highest success rate first (desc)
+      - first_seen: oldest first (asc)
+    """
+    from manifold.database import get_session
+    from manifold.models.vpn_server import VpnServer
+
+    out = []
+    with get_session() as session:
+        rows = session.query(VpnServer).all()
+        for r in rows:
+            avg = (r.sum_rtt_ms / r.successful_samples) if (r.successful_samples and r.sum_rtt_ms) else None
+            success_rate = (r.successful_samples / r.total_samples) if r.total_samples else 0.0
+            out.append({
+                "ip": r.ip,
+                "city": r.city or "",
+                "country": r.country or "",
+                "hostname": r.hostname or "",
+                "org": r.org or "",
+                "is_current": bool(r.is_current),
+                "first_seen_at": r.first_seen_at.isoformat() if r.first_seen_at else None,
+                "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+                "total_samples": r.total_samples,
+                "successful_samples": r.successful_samples,
+                "success_rate": round(success_rate, 4),
+                "min_rtt_ms": round(r.min_rtt_ms, 1) if r.min_rtt_ms is not None else None,
+                "max_rtt_ms": round(r.max_rtt_ms, 1) if r.max_rtt_ms is not None else None,
+                "avg_rtt_ms": round(avg, 1) if avg is not None else None,
+                "total_seconds_connected": r.total_seconds_connected,
+            })
+
+    # Sort
+    if sort == "avg_rtt":
+        # Servers with no successful samples sort to the end
+        out.sort(key=lambda x: (x["avg_rtt_ms"] is None, x["avg_rtt_ms"] or 0),
+                 reverse=(order == "desc"))
+    elif sort == "last_seen":
+        out.sort(key=lambda x: x["last_seen_at"] or "",
+                 reverse=(order != "asc"))
+    elif sort == "total_samples":
+        out.sort(key=lambda x: x["total_samples"], reverse=(order != "asc"))
+    elif sort == "success_rate":
+        out.sort(key=lambda x: x["success_rate"], reverse=(order != "asc"))
+    elif sort == "first_seen":
+        out.sort(key=lambda x: x["first_seen_at"] or "",
+                 reverse=(order == "desc"))
+    elif sort == "connected":
+        out.sort(key=lambda x: x["total_seconds_connected"], reverse=(order != "asc"))
+
+    return out[:limit]
 
 
 def maybe_auto_rotate():

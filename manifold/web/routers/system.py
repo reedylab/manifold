@@ -226,6 +226,21 @@ def vpn_history(minutes: int = Query(default=60, ge=1, le=1440)):
     }
 
 
+@router.get("/vpn/servers")
+def vpn_servers(
+    sort: str = Query(default="avg_rtt"),
+    order: str = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    """List known VPN servers with computed avg latency, success rate, etc.
+
+    sort: avg_rtt | last_seen | total_samples | success_rate | first_seen | connected
+    order: asc | desc (sensible defaults per sort)
+    """
+    from manifold.services.vpn_monitor import list_servers
+    return {"servers": list_servers(sort=sort, order=order, limit=limit)}
+
+
 @router.post("/vpn/rotate")
 def vpn_rotate():
     """Manually cycle the gluetun WireGuard tunnel to get a new exit IP.

@@ -242,7 +242,25 @@ body.theme-dark{
 .stats-grid-4{grid-template-columns:repeat(4,1fr)}
 .vpn-stat-footer{display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:12px;gap:8px}
 .vpn-stat-footer .text-muted{font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;color:var(--text-muted)}
+.vpn-stat-actions{display:flex;gap:6px;flex-shrink:0}
 @media(max-width:1280px){.stats-grid-4{grid-template-columns:repeat(2,1fr)}}
+
+/* VPN history modal */
+.vpn-history-modal{max-width:1100px !important;width:95vw}
+.vpn-history-modal .modal-body{max-height:75vh;overflow:auto}
+.vpn-history-controls{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px}
+.vpn-history-controls label{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted)}
+.vpn-history-table-wrap{overflow-x:auto}
+.vpn-history-tbl{width:100%;font-size:13px}
+.vpn-history-tbl th,.vpn-history-tbl td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
+.vpn-history-tbl th{font-weight:600;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.vpn-history-tbl th.num,.vpn-history-tbl td.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono)}
+.vpn-history-tbl tr.is-current{background:rgba(88,166,255,.08)}
+.vpn-history-tbl tr.top-rank{background:rgba(63,185,80,.06)}
+.vpn-history-tbl .ip-cell{font-family:var(--mono);font-size:12px;color:var(--text-muted)}
+.vpn-history-tbl .rank-marker{display:inline-block;width:18px;text-align:center;margin-right:4px}
+.vpn-history-tbl .rank-current{color:var(--accent)}
+.vpn-history-tbl .rank-gold{color:var(--warn)}
 .stat-card{
   background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);
   padding:18px;box-shadow:var(--shadow);

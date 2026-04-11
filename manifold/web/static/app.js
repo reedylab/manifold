@@ -941,6 +941,84 @@ async function loadStats(){
   } catch(e) {}
 }
 
+// VPN Server History modal
+function fmtDuration(seconds){
+  if(!seconds || seconds < 60) return (seconds||0)+"s";
+  const h = Math.floor(seconds/3600);
+  const m = Math.floor((seconds%3600)/60);
+  if(h > 24){
+    const d = Math.floor(h/24);
+    return `${d}d ${h%24}h`;
+  }
+  if(h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+function fmtRelative(iso){
+  if(!iso) return "--";
+  const then = new Date(iso).getTime();
+  const sec = Math.floor((Date.now() - then) / 1000);
+  if(sec < 60) return sec+"s ago";
+  if(sec < 3600) return Math.floor(sec/60)+"m ago";
+  if(sec < 86400) return Math.floor(sec/3600)+"h ago";
+  return Math.floor(sec/86400)+"d ago";
+}
+
+async function loadVpnHistory(sort){
+  sort = sort || $("#vpn-history-sort").value || "avg_rtt";
+  try {
+    const r = await api(`/vpn/servers?sort=${sort}&limit=100`);
+    const servers = r.servers || [];
+    $("#vpn-history-count").textContent = `${servers.length} server${servers.length === 1 ? "" : "s"}`;
+    const body = $("#vpn-history-body");
+    if(servers.length === 0){
+      body.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:24px">No server history yet — samples accumulate every minute.</td></tr>`;
+      return;
+    }
+    body.innerHTML = servers.map((s, i) => {
+      const cls = [];
+      if(s.is_current) cls.push("is-current");
+      if(sort === "avg_rtt" && i < 3 && s.avg_rtt_ms != null) cls.push("top-rank");
+      const rankMarker = s.is_current
+        ? '<span class="rank-marker rank-current" title="Current">●</span>'
+        : (sort === "avg_rtt" && i < 3 && s.avg_rtt_ms != null)
+          ? `<span class="rank-marker rank-gold" title="Top ${i+1}">${["★","②","③"][i]}</span>`
+          : '<span class="rank-marker"></span>';
+      return `<tr class="${cls.join(" ")}">
+        <td>${rankMarker}${s.city || "?"}${s.country ? ", " + s.country : ""}</td>
+        <td class="ip-cell">${s.ip}</td>
+        <td>${s.org || "--"}</td>
+        <td class="num">${s.avg_rtt_ms != null ? s.avg_rtt_ms.toFixed(1) : "--"}</td>
+        <td class="num">${s.min_rtt_ms != null ? s.min_rtt_ms.toFixed(1) : "--"}</td>
+        <td class="num">${s.max_rtt_ms != null ? s.max_rtt_ms.toFixed(1) : "--"}</td>
+        <td class="num">${(s.success_rate * 100).toFixed(1)}%</td>
+        <td class="num">${s.total_samples}</td>
+        <td class="num">${fmtDuration(s.total_seconds_connected)}</td>
+        <td>${fmtRelative(s.last_seen_at)}</td>
+      </tr>`;
+    }).join("");
+  } catch(e){
+    $("#vpn-history-body").innerHTML = `<tr><td colspan="10" style="color:var(--danger);padding:24px">Failed to load: ${e}</td></tr>`;
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const histBtn = document.getElementById("vpn-history-btn");
+  const histModal = document.getElementById("vpn-history-modal");
+  const histClose = document.getElementById("vpn-history-close");
+  const histSort = document.getElementById("vpn-history-sort");
+  if (histBtn && histModal) {
+    histBtn.addEventListener("click", () => {
+      histModal.classList.remove("hidden");
+      loadVpnHistory();
+    });
+    histClose.addEventListener("click", () => histModal.classList.add("hidden"));
+    histModal.addEventListener("click", (e) => {
+      if (e.target === histModal) histModal.classList.add("hidden");
+    });
+    histSort.addEventListener("change", () => loadVpnHistory());
+  }
+});
+
 // Manual rotate button (System tab)
 document.addEventListener("DOMContentLoaded", () => {
   const btn = document.getElementById("vpn-rotate-btn");

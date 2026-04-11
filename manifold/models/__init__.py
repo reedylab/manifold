@@ -5,3 +5,4 @@ from manifold.models.manifest import Manifest, Capture, HeaderProfile, Variant, 
 from manifold.models.epg import Epg
 from manifold.models.program import Program
 from manifold.models.settings import Settings
+from manifold.models.vpn_server import VpnServer
