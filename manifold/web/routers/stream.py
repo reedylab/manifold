@@ -3,7 +3,6 @@
 import os
 import re
 import logging
-from datetime import datetime, timezone
 from urllib.parse import urljoin, quote
 
 import requests as http_requests
@@ -21,17 +20,6 @@ router = APIRouter()
 MANIFEST_ID_RE = re.compile(r"^[a-f0-9-]+$")
 CHUNK = 16384
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-
-def _touch_access(manifest_id: str):
-    """Update last_accessed_at for demand-driven refresh tracking. Best-effort."""
-    try:
-        with get_session() as session:
-            session.query(Manifest).filter_by(id=manifest_id).update(
-                {"last_accessed_at": datetime.now(timezone.utc)}
-            )
-    except Exception as e:
-        logger.debug("touch access failed: %s", e)
 
 
 @router.get("/{manifest_id}.m3u8")
@@ -54,7 +42,6 @@ def stream_playlist(manifest_id: str, src: str = Query(default=None)):
     if not m:
         raise HTTPException(status_code=404)
     url, headers, title, stream_mode = m
-    _touch_access(manifest_id)
     stream_mode = stream_mode or "passthrough"
 
     if stream_mode == "ffmpeg":
@@ -99,30 +86,10 @@ def _serve_local_playlist(mid, path):
     return Response("\n".join(lines) + "\n", media_type="application/vnd.apple.mpegurl")
 
 
-def _refresh_and_get_url(mid: str) -> str | None:
-    """Trigger a synchronous refresh of a resolved manifest and return its new URL."""
-    from manifold.services.manifest_resolver import ManifestResolverService
-    result = ManifestResolverService.refresh_manifest(mid)
-    if not result.get("ok"):
-        logger.warning("Sync refresh failed for %s: %s", mid, result.get("error"))
-        return None
-    with get_session() as session:
-        row = session.query(Manifest.url).filter(Manifest.id == mid).first()
-    return row[0] if row else None
-
-
-def _proxy_m3u8(mid, url, _retried=False):
+def _proxy_m3u8(mid, url):
     try:
         r = http_requests.get(url, headers={"User-Agent": UA}, timeout=15, allow_redirects=True)
-        if r.status_code in (401, 403) and not _retried:
-            logger.warning("Upstream %s for %s — triggering sync refresh", r.status_code, mid)
-            new_url = _refresh_and_get_url(mid)
-            if new_url and new_url != url:
-                return _proxy_m3u8(mid, new_url, _retried=True)
         r.raise_for_status()
-    except http_requests.HTTPError as e:
-        logger.error("Proxy m3u8 failed: %s", e)
-        raise HTTPException(status_code=502)
     except Exception as e:
         logger.error("Proxy m3u8 failed: %s", e)
         raise HTTPException(status_code=502)

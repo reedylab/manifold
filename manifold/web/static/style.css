@@ -518,11 +518,6 @@ body.theme-dark{
 .resolver-tbl tbody td{font-size:13px}
 .resolver-tbl .res-url{font-family:var(--mono);font-size:12px;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-.res-expiry{display:inline-block;font-size:11px;padding:1px 6px;border-radius:8px;background:rgba(34,197,94,.12);color:var(--ok);border:1px solid rgba(34,197,94,.25);margin-top:3px}
-.res-expiry-soon{background:rgba(245,158,11,.12);color:var(--warn);border-color:rgba(245,158,11,.25)}
-.res-expiry-stale{background:rgba(239,68,68,.12);color:var(--danger);border-color:rgba(239,68,68,.25)}
-.res-expiry-unknown{background:rgba(125,133,144,.15);color:var(--text-muted);border-color:var(--border)}
-
 .res-status{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle}
 .res-status-pending{background:var(--text-muted)}
 .res-status-resolving{background:var(--accent);animation:res-pulse 1s infinite}

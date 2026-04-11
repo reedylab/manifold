@@ -63,9 +63,6 @@ class Manifest(Base):
     channel_number = Column(Integer, nullable=True)    # User-assigned channel number
     title_override = Column(String, nullable=True)     # Display name override (original title preserved)
     stale_since = Column(DateTime(timezone=True), nullable=True)  # When channel disappeared from M3U source
-    expires_at = Column(DateTime(timezone=True), nullable=True)   # Parsed CDN token expiry for resolved channels
-    last_refreshed_at = Column(DateTime(timezone=True), nullable=True)  # Last predictive refresh timestamp
-    last_accessed_at = Column(DateTime(timezone=True), nullable=True)   # Last client playlist request — used for demand-driven refresh
     tags = Column(JSONB, default=list)
     event_end_at = Column(DateTime(timezone=True))
     active = Column(Boolean, default=True)

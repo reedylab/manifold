@@ -89,21 +89,3 @@ def retry_item(index: int):
     )
     thread.start()
     return {"ok": True}
-
-
-@router.post("/resolve/refresh/{manifest_id}")
-def refresh_single(manifest_id: str):
-    """Manually trigger a re-resolve of a specific manifest from its stored page_url."""
-    from manifold.services.manifest_resolver import ManifestResolverService
-
-    status = ManifestResolverService.get_status()
-    if status["running"]:
-        return JSONResponse({"error": "resolve already running"}, status_code=409)
-
-    thread = threading.Thread(
-        target=ManifestResolverService.refresh_manifest,
-        args=(manifest_id,),
-        daemon=True,
-    )
-    thread.start()
-    return {"ok": True, "message": f"Refreshing {manifest_id}"}

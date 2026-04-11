@@ -8,7 +8,6 @@ in Manifold's database.
 import hashlib
 import logging
 import re
-from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, urljoin
 
 import requests as http_requests
@@ -16,7 +15,6 @@ import requests as http_requests
 from manifold.config import Config
 from manifold.database import get_session
 from manifold.models.manifest import Capture, Manifest, Variant, HeaderProfile
-from manifold.services.expiry_parser import parse_expiry, parse_body_expiry
 
 logger = logging.getLogger(__name__)
 
@@ -124,13 +122,8 @@ class ManifestResolverService:
             return False
 
     @staticmethod
-    def resolve(url: str, title: str | None = None, timeout: int = 60,
-                existing_manifest_id: str | None = None) -> dict:
-        """Capture an m3u8 manifest via the sidecar and store it in DB.
-
-        If existing_manifest_id is provided, the specified row is updated in place
-        (used for token refresh — keeps the same manifest ID so streams don't break).
-        """
+    def resolve(url: str, title: str | None = None, timeout: int = 60) -> dict:
+        """Capture an m3u8 manifest via the sidecar and store it in DB."""
         _status["running"] = True
         _status["last_url"] = url
         _status["last_error"] = None
@@ -174,21 +167,11 @@ class ManifestResolverService:
                 title=title,
                 context=context,
                 heartbeat=heartbeat,
-                existing_manifest_id=existing_manifest_id,
             )
 
             _status["last_manifest_id"] = manifest_id
-            now_utc = datetime.now(timezone.utc)
-            expires_at = parse_body_expiry(body_text, manifest_url) or (now_utc + timedelta(minutes=30))
-            logger.info("Manifest resolved and stored: %s -> %s (expires %s)",
-                        url, manifest_id, expires_at.isoformat())
-            return {
-                "ok": True,
-                "manifest_id": manifest_id,
-                "manifest_url": manifest_url,
-                "expires_at": expires_at.isoformat() if expires_at else None,
-                "error": None,
-            }
+            logger.info("Manifest resolved and stored: %s -> %s", url, manifest_id)
+            return {"ok": True, "manifest_id": manifest_id, "manifest_url": manifest_url, "error": None}
 
         except http_requests.exceptions.RequestException as e:
             err = f"Sidecar communication failed: {e}"
@@ -205,32 +188,6 @@ class ManifestResolverService:
             _status["running"] = False
 
     @staticmethod
-    def refresh_manifest(manifest_id: str, timeout: int = 60) -> dict:
-        """Re-resolve an existing manifest using its stored page_url.
-
-        Updates the same row in place (preserves manifest_id) so active streams
-        see a seamless URL swap on their next playlist poll.
-        """
-        with get_session() as session:
-            row = (
-                session.query(Manifest.title, Capture.page_url)
-                .outerjoin(Capture, Manifest.capture_id == Capture.id)
-                .filter(Manifest.id == manifest_id)
-                .first()
-            )
-        if not row:
-            return {"ok": False, "manifest_id": manifest_id, "error": "manifest not found"}
-        title, page_url = row
-        if not page_url:
-            return {"ok": False, "manifest_id": manifest_id, "error": "no page_url for refresh"}
-
-        logger.info("Refreshing manifest %s from %s", manifest_id, page_url)
-        return ManifestResolverService.resolve(
-            url=page_url, title=title, timeout=timeout,
-            existing_manifest_id=manifest_id,
-        )
-
-    @staticmethod
     def get_batch_status():
         return dict(_batch)
 
@@ -242,7 +199,7 @@ class ManifestResolverService:
         _batch["completed"] = 0
         _batch["results"] = [
             {"url": u["url"], "title": u.get("title"), "status": "pending",
-             "manifest_id": None, "manifest_url": None, "expires_at": None, "error": None}
+             "manifest_id": None, "manifest_url": None, "error": None}
             for u in urls
         ]
 
@@ -258,7 +215,6 @@ class ManifestResolverService:
                 _batch["results"][i]["status"] = "done"
                 _batch["results"][i]["manifest_id"] = result["manifest_id"]
                 _batch["results"][i]["manifest_url"] = result["manifest_url"]
-                _batch["results"][i]["expires_at"] = result.get("expires_at")
             else:
                 _batch["results"][i]["status"] = "failed"
                 _batch["results"][i]["error"] = result["error"]
@@ -294,7 +250,6 @@ class ManifestResolverService:
             item["status"] = "done"
             item["manifest_id"] = result["manifest_id"]
             item["manifest_url"] = result["manifest_url"]
-            item["expires_at"] = result.get("expires_at")
         else:
             item["status"] = "failed"
             item["error"] = result["error"]
@@ -315,21 +270,12 @@ def _store_manifest(
     title: str | None,
     context: dict,
     heartbeat: dict | None,
-    existing_manifest_id: str | None = None,
 ) -> str:
-    """Insert or update a manifest in Manifold's DB. Returns manifest ID.
-
-    If existing_manifest_id is given, the specified row is updated in place
-    regardless of hash changes (used for token refresh).
-    """
+    """Insert capture + manifest into Manifold's DB. Returns manifest ID."""
     source_domain = urlparse(manifest_url).netloc
     kind = "master" if "#EXT-X-STREAM-INF" in body_text else "media"
     url_hash = _md5(manifest_url)
     body_hash = _sha256(body_text)
-    now = datetime.now(timezone.utc)
-    # Try to parse real expiry from URL/body; fall back to 30min default so the
-    # scheduler refreshes all resolved channels periodically regardless of token format.
-    expires_at = parse_body_expiry(body_text, manifest_url) or (now + timedelta(minutes=30))
 
     # DRM detection
     drm_method = None
@@ -359,49 +305,18 @@ def _store_manifest(
                 session.flush()
             header_profile_id = hp.id
 
-        # Find existing row for in-place update:
-        # 1. Explicit manifest_id (refresh path) takes precedence
-        # 2. Otherwise match by active resolved title (re-resolving same channel)
-        # 3. Otherwise fall back to hash dedup (generic content)
-        manifest = None
-        if existing_manifest_id:
-            manifest = session.query(Manifest).filter_by(id=existing_manifest_id).first()
-        if not manifest and title:
-            manifest = session.query(Manifest).filter(
-                Manifest.title == title,
-                Manifest.active == True,
-                Manifest.tags.contains(["resolved"]),
-            ).first()
-        if not manifest:
-            manifest = session.query(Manifest).filter(
-                Manifest.url_hash == url_hash,
-                Manifest.sha256 == body_hash,
-            ).first()
+        manifest = session.query(Manifest).filter(
+            Manifest.url_hash == url_hash,
+            Manifest.sha256 == body_hash,
+        ).first()
 
         if manifest:
-            # Update in place — preserves manifest_id across token refreshes
             manifest.capture_id = cap.id
             if header_profile_id:
                 manifest.header_profile_id = header_profile_id
                 manifest.requires_headers = True
-            manifest.url = manifest_url
-            manifest.url_hash = url_hash
-            manifest.source_domain = source_domain
-            manifest.mime = mime
-            manifest.kind = kind
-            manifest.headers = resp_headers or {}
             manifest.body = body_text
             manifest.sha256 = body_hash
-            manifest.drm_method = drm_method
-            manifest.is_drm = is_drm
-            manifest.expires_at = expires_at
-            manifest.last_refreshed_at = now
-            # Refresh variants for master playlists (drop old, insert new)
-            if kind == "master":
-                session.query(Variant).filter_by(manifest_id=manifest.id).delete()
-                session.flush()
-                for v in _parse_master_variants(body_text, manifest_url):
-                    session.add(Variant(manifest_id=manifest.id, **v))
         else:
             manifest = Manifest(
                 capture_id=cap.id,
@@ -420,8 +335,6 @@ def _store_manifest(
                 title=title,
                 tags=["live", "captured", "resolved"],
                 active=True,
-                expires_at=expires_at,
-                last_refreshed_at=now,
             )
             session.add(manifest)
             session.flush()
