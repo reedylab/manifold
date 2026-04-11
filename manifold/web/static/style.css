@@ -239,6 +239,10 @@ body.theme-dark{
 
 /* Stats */
 .stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:18px}
+.stats-grid-4{grid-template-columns:repeat(4,1fr)}
+.vpn-stat-footer{display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:12px;gap:8px}
+.vpn-stat-footer .text-muted{font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;color:var(--text-muted)}
+@media(max-width:1280px){.stats-grid-4{grid-template-columns:repeat(2,1fr)}}
 .stat-card{
   background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);
   padding:18px;box-shadow:var(--shadow);

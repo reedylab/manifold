@@ -5,7 +5,7 @@
   <title>Manifold</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-  <link rel="stylesheet" href="/static/style.css?v=39" />
+  <link rel="stylesheet" href="/static/style.css?v=40" />
 </head>
 <body class="theme-dark">
   <!-- Header -->
@@ -292,7 +292,7 @@
 
       <!-- SYSTEM STATS -->
       <section id="view-stats" class="view">
-        <div class="stats-grid">
+        <div class="stats-grid stats-grid-4">
           <div class="stat-card">
             <div class="stat-card-header"><h4>CPU</h4><span class="stat-live" id="cpu-live">--%</span></div>
             <div class="stat-chart" id="cpu-chart"></div>
@@ -304,6 +304,14 @@
           <div class="stat-card">
             <div class="stat-card-header"><h4>Disk</h4><span class="stat-live" id="disk-live">--</span></div>
             <div class="stat-chart" id="disk-chart"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-header"><h4>VPN Latency</h4><span class="stat-live" id="vpn-live">--ms</span></div>
+            <div class="stat-chart" id="vpn-chart"></div>
+            <div class="vpn-stat-footer">
+              <span id="vpn-exit" class="text-muted">--</span>
+              <button id="vpn-rotate-btn" class="btn btn-sm" title="Cycle VPN tunnel — picks a new server from your SERVER_CITIES list">&#x21BB; Rotate</button>
+            </div>
           </div>
         </div>
       </section>
@@ -456,6 +464,6 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-  <script src="/static/app.js?v=38"></script>
+  <script src="/static/app.js?v=39"></script>
 </body>
 </html>

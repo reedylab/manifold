@@ -22,6 +22,7 @@ SETTING_KEYS = [
     "dummy_epg_days", "dummy_epg_block_minutes",
     "scheduler_image_enrichment_hours", "tmdb_api_key", "fanart_api_key",
     "scheduler_m3u_refresh_hours", "scheduler_epg_refresh_hours",
+    "vpn_auto_rotate_minutes",
 ]
 
 
@@ -116,6 +117,8 @@ def get_settings():
         result["scheduler_m3u_refresh_hours"] = "4"
     if not result.get("scheduler_epg_refresh_hours"):
         result["scheduler_epg_refresh_hours"] = "12"
+    if not result.get("vpn_auto_rotate_minutes"):
+        result["vpn_auto_rotate_minutes"] = "0"
     result["pg_host"] = cfg.PG_HOST
     result["pg_port"] = cfg.PG_PORT
     result["pg_db"] = cfg.PG_DB
@@ -211,6 +214,32 @@ def vpn_status():
         }
     except Exception as e:
         return {"enabled": True, "status": "unreachable", "error": str(e)}
+
+
+@router.get("/vpn/history")
+def vpn_history(minutes: int = Query(default=60, ge=1, le=1440)):
+    """Return recent VPN latency samples + summary stats for the dashboard chart."""
+    from manifold.services.vpn_monitor import get_history, get_summary
+    return {
+        "summary": get_summary(),
+        "samples": get_history(minutes),
+    }
+
+
+@router.post("/vpn/rotate")
+def vpn_rotate():
+    """Manually cycle the gluetun WireGuard tunnel to get a new exit IP.
+
+    Calls gluetun's control API (PUT /v1/vpn/status) to stop and start the
+    tunnel, which picks a new random server from the configured SERVER_CITIES.
+    Does NOT recreate the gluetun container — attached services keep their
+    network namespace.
+    """
+    from manifold.services.vpn_monitor import rotate_vpn
+    result = rotate_vpn(reason="manual")
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=502)
+    return result
 
 
 # ── System Stats ─────────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ def start_scheduler(app):
     from manifold.services.image_enricher import ImageEnricherService
     from manifold.services.m3u_ingest import M3uIngestService
     from manifold.services.epg_ingest import EpgIngestService
+    from manifold.services.vpn_monitor import sample_latency, maybe_auto_rotate
     from manifold.config import get_setting
 
     _scheduler = BackgroundScheduler(daemon=True)
@@ -70,6 +71,18 @@ def start_scheduler(app):
         except Exception as e:
             logger.error("EPG refresh failed: %s", e)
 
+    def vpn_sample_job():
+        try:
+            sample_latency()
+        except Exception as e:
+            logger.error("VPN sample failed: %s", e)
+
+    def vpn_rotate_job():
+        try:
+            maybe_auto_rotate()
+        except Exception as e:
+            logger.error("VPN rotate check failed: %s", e)
+
     regen_minutes = int(get_setting("scheduler_regen_minutes", "5") or "5")
     cleanup_hours = int(get_setting("scheduler_cleanup_hours", "1") or "1")
 
@@ -101,10 +114,25 @@ def start_scheduler(app):
                        id="epg_refresh", name="EPG Data Refresh",
                        replace_existing=True)
 
+    # VPN: latency sampler runs every 60s; rotate job runs every 60s but
+    # internally checks vpn_auto_rotate_minutes (default 0 = disabled)
+    _scheduler.add_job(vpn_sample_job, "interval", seconds=60,
+                       id="vpn_sample", name="VPN Latency Sampler",
+                       replace_existing=True)
+    _scheduler.add_job(vpn_rotate_job, "interval", seconds=60,
+                       id="vpn_rotate", name="VPN Auto-Rotate Check",
+                       replace_existing=True)
+
     _scheduler.start()
     logger.info("Scheduler started: regen=%dm, cleanup=%dh, logo_sync=30m, stream_cleanup=60s, "
-                "image_enrichment=%dh, m3u_refresh=%dh, epg_refresh=%dh",
+                "image_enrichment=%dh, m3u_refresh=%dh, epg_refresh=%dh, vpn_sample=60s",
                 regen_minutes, cleanup_hours, image_enrichment_hours, m3u_refresh_hours, epg_refresh_hours)
+
+    # Take an immediate VPN sample so the chart isn't empty for the first 60s
+    try:
+        sample_latency()
+    except Exception:
+        pass
 
     # Run initial generation on startup
     regen_job()

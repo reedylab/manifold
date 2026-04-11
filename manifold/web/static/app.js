@@ -903,6 +903,7 @@ $("#clear-log").addEventListener("click", ()=>{
 // ── System Stats ─────────────────────────────────────────────────────────
 const cpuHistory = [];
 const ramHistory = [];
+const vpnHistory = [];
 const MAX_POINTS = 60;
 
 async function loadStats(){
@@ -920,7 +921,50 @@ async function loadStats(){
   drawChart("cpu-chart", cpuHistory, "var(--accent)", 100);
   drawChart("ram-chart", ramHistory, "var(--accent-2)", 100);
   drawDisk("disk-chart", s.disk_percent, s.disk_used_gb, s.disk_total_gb);
+
+  // VPN latency
+  try {
+    const v = await api("/vpn/history?minutes=60");
+    const series = (v.samples || [])
+      .map(x => x.rtt_ms)
+      .filter(x => x !== null && x !== undefined);
+    vpnHistory.length = 0;
+    vpnHistory.push(...series.slice(-MAX_POINTS));
+    const sum = v.summary || {};
+    $("#vpn-live").textContent = sum.current_rtt_ms != null ? sum.current_rtt_ms.toFixed(1) + "ms" : "--ms";
+    const exitText = sum.current_city ? `${sum.current_city} · ${sum.current_ip || ""}` : "--";
+    $("#vpn-exit").textContent = exitText;
+    // Auto-scale Y to ~120% of observed max (min 100ms) so spikes are visible
+    const observed = vpnHistory.length ? Math.max(...vpnHistory) : 0;
+    const max = Math.max(observed * 1.2, 100);
+    drawChart("vpn-chart", vpnHistory, "var(--ok)", max);
+  } catch(e) {}
 }
+
+// Manual rotate button (System tab)
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.getElementById("vpn-rotate-btn");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    if (!confirm("Rotate VPN — picks a new server from your SERVER_CITIES list. ~5-15s of brief connectivity blip while the tunnel reconnects.")) return;
+    btn.disabled = true;
+    const orig = btn.innerHTML;
+    btn.textContent = "Rotating...";
+    try {
+      const r = await fetch(API + "/vpn/rotate", {method: "POST"});
+      const j = await r.json();
+      if (j.ok) {
+        toast(`Rotated to ${j.to.city || j.to.ip || "new exit"}`, "success");
+        loadStats();
+      } else {
+        toast(j.error || "Rotate failed", "error");
+      }
+    } catch(e) {
+      toast("Rotate failed", "error");
+    }
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 2000);
+  });
+});
 
 function drawChart(id, data, color, max){
   const el = document.getElementById(id);
@@ -990,6 +1034,11 @@ function renderSettings(){
       <div class="setting-field">
         <label>Auto-Activation Interval (hours)</label>
         <input type="number" id="set-activation" value="${settings.scheduler_activation_hours||4}" min="1">
+      </div>
+      <div class="setting-field">
+        <label>VPN Auto-Rotate Interval (minutes, 0 = disabled)</label>
+        <input type="number" id="set-vpn-rotate" value="${settings.vpn_auto_rotate_minutes||0}" min="0">
+        <span class="field-hint">Cycles the gluetun WireGuard tunnel through your SERVER_CITIES list on this interval. Brief 5-15s connectivity blip per rotate; manifold's stream proxy and clients recover automatically on next playlist poll.</span>
       </div>
     </div>`;
   } else if(currentSettingsSub === "images"){
@@ -1325,6 +1374,8 @@ $("#save-settings").addEventListener("click", async ()=>{
   if(regen) payload.scheduler_regen_minutes = regen.value;
   if(cleanup) payload.scheduler_cleanup_hours = cleanup.value;
   if(activation) payload.scheduler_activation_hours = activation.value;
+  const vpnRotate = $("#set-vpn-rotate");
+  if(vpnRotate) payload.vpn_auto_rotate_minutes = vpnRotate.value;
   if(host) payload.bridge_host = host.value;
   if(port) payload.bridge_port = port.value;
   if(tmdbKey) payload.tmdb_api_key = tmdbKey.value;
