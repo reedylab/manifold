@@ -22,7 +22,7 @@ SETTING_KEYS = [
     "dummy_epg_days", "dummy_epg_block_minutes",
     "scheduler_image_enrichment_hours", "tmdb_api_key", "fanart_api_key",
     "scheduler_m3u_refresh_hours", "scheduler_epg_refresh_hours",
-    "vpn_auto_rotate_minutes",
+    "vpn_auto_rotate_minutes", "vpn_scheduled_rotate_time",
 ]
 
 
@@ -41,11 +41,33 @@ def generate():
 
 @router.get("/scheduler")
 def list_scheduler():
-    return get_jobs_info()
+    """List scheduler tasks. Hides vpn_* tasks entirely in local (non-VPN) mode
+    so users running manifold without gluetun don't see VPN-related controls
+    they can't act on. The latency sampler still runs in the background to
+    power the Network Latency chart, just hidden from the task list."""
+    cfg = Config()
+    jobs = get_jobs_info()
+    if not cfg.GLUETUN_CONTROL_URL:
+        jobs = [j for j in jobs if not j["id"].startswith("vpn_")]
+    return jobs
 
 
 @router.put("/scheduler/{job_id}")
 def update_scheduler_job(job_id: str, data: dict = Body(default={})):
+    # Cron-style update for time-of-day jobs (e.g. vpn_scheduled_rotate)
+    if "time" in data:
+        from manifold.scheduler import update_vpn_scheduled_rotate
+        if job_id != "vpn_scheduled_rotate":
+            return JSONResponse({"error": "time field only supported for cron jobs"}, status_code=400)
+        time_str = (data.get("time") or "").strip()
+        ok = update_vpn_scheduled_rotate(time_str)
+        if not ok:
+            return JSONResponse({"error": "invalid time format (expected HH:MM)"}, status_code=400)
+        # Persist so it survives restart
+        set_setting("vpn_scheduled_rotate_time", time_str)
+        return {"ok": True}
+
+    # Interval-style update (existing behavior)
     seconds = data.get("interval_seconds")
     if not seconds or int(seconds) < 10:
         return JSONResponse({"error": "interval_seconds must be >= 10"}, status_code=400)

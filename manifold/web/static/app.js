@@ -1219,6 +1219,9 @@ const TASK_DISPLAY_NAMES = {
   event_cleanup: "Event Cleanup",
   logo_sync: "Logo Sync",
   stream_cleanup: "Stream Cleanup",
+  vpn_sample: "VPN Latency Sampler",
+  vpn_rotate: "VPN Auto-Rotate Check",
+  vpn_scheduled_rotate: "Scheduled VPN Rotate",
 };
 
 function fmtRelative(isoStr){
@@ -1252,13 +1255,20 @@ async function renderTasksView(){
     const options = TASK_INTERVAL_OPTIONS[job.id] || [];
     const isEnrichment = job.id === "image_enrichment";
     const isRunning = isEnrichment && _enrichStatus && _enrichStatus.running;
+    const isCron = job.trigger_type === "cron";
 
     let selectHtml = "";
-    if(options.length){
+    if(isCron){
+      // Time-of-day picker for cron jobs (vpn_scheduled_rotate). Triggers a
+      // PUT with {time} on change instead of {interval_seconds}.
+      const timeVal = job.cron_time || "04:00";
+      selectHtml = `<input type="time" class="task-time" data-task-cron="${job.id}" value="${timeVal}">`;
+    } else if(options.length){
       selectHtml = `<select class="task-select" data-task-interval="${job.id}">` +
         options.map(o => `<option value="${o.seconds}" ${Math.abs(job.interval_seconds - o.seconds) < 5 ? "selected" : ""}>${o.label}</option>`).join("") +
         `</select>`;
     }
+    const labelText = isCron ? "At:" : "Every:";
 
     let actionsHtml = `<button class="btn-sm" data-task-run="${job.id}">Run Now</button>`;
     if(isEnrichment && isRunning){
@@ -1283,7 +1293,7 @@ async function renderTasksView(){
         <div class="task-actions">${actionsHtml}</div>
       </div>
       <div class="task-meta">
-        <span>Every: ${selectHtml}</span>
+        <span>${labelText} ${selectHtml}</span>
         <span class="task-next">Next: ${fmtRelative(job.next_run)}</span>
       </div>
       ${extraHtml}
@@ -1299,6 +1309,20 @@ async function renderTasksView(){
         await apiPut(`/scheduler/${jobId}`, {interval_seconds: seconds});
         toast("Interval updated", "success");
       } catch(e){ toast("Failed to update interval", "error"); }
+    });
+  });
+
+  // Bind cron time change handlers (for vpn_scheduled_rotate)
+  $$("[data-task-cron]", container).forEach(inp => {
+    inp.addEventListener("change", async () => {
+      const jobId = inp.dataset.taskCron;
+      const time = inp.value;
+      if(!time){ return; }
+      try {
+        await apiPut(`/scheduler/${jobId}`, {time});
+        toast(`Scheduled at ${time} daily`, "success");
+        setTimeout(()=> renderTasksView(), 500);
+      } catch(e){ toast("Failed to update schedule", "error"); }
     });
   });
 

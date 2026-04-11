@@ -514,6 +514,12 @@ body.theme-dark{
 }
 .task-select:focus{outline:none;border-color:var(--accent)}
 .task-select option{background:var(--bg-card);color:var(--text)}
+.task-time{
+  background:var(--bg);color:var(--text);border:1px solid var(--border);
+  border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;
+  font-family:var(--mono);
+}
+.task-time:focus{outline:none;border-color:var(--accent)}
 .image-stats{margin-top:16px}
 .image-stat-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:14px}
 .image-stat-row:last-child{border-bottom:none}
