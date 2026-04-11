@@ -79,7 +79,7 @@ def health():
     return {"status": "ok"}
 
 # Include routers
-from manifold.web.routers import ui, channels, sources, output, hdhr, stream, logo, guide, media, system, resolve
+from manifold.web.routers import ui, channels, sources, output, hdhr, stream, logo, guide, media, system
 
 app.include_router(ui.router)
 app.include_router(channels.router, prefix="/api")
@@ -91,4 +91,3 @@ app.include_router(logo.router, prefix="/logo")
 app.include_router(guide.router, prefix="/api")
 app.include_router(media.router, prefix="/api")
 app.include_router(system.router, prefix="/api")
-app.include_router(resolve.router, prefix="/api")

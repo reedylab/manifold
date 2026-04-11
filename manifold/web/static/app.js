@@ -16,9 +16,6 @@ let editingId = null;
 let channelViewMode = "table"; // "table" or "tiles"
 let tasksTimer = null;
 let enrichStatusTimer = null;
-let resolverTimer = null;
-let resolverHls = null;
-let resolverPlayingId = null;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 function $(sel, ctx){ return (ctx||document).querySelector(sel) }
@@ -147,7 +144,6 @@ function switchView(view){
   clearInterval(statsTimer); statsTimer = null;
   clearInterval(tasksTimer); tasksTimer = null;
   clearInterval(enrichStatusTimer); enrichStatusTimer = null;
-  clearInterval(resolverTimer); resolverTimer = null;
 
   if(view === "channels") loadChannels();
   else if(view === "m3u-sources") loadM3uSources();
@@ -155,7 +151,6 @@ function switchView(view){
   else if(view === "epg") loadEpg();
   else if(view === "guide") loadGuide();
   else if(view === "bumps") loadBumps();
-  else if(view === "resolver") loadResolver();
   else if(view === "logs"){ loadLogs(); logTimer = setInterval(loadLogs, 2000); }
   else if(view === "stats"){ loadStats(); statsTimer = setInterval(loadStats, 3000); }
   else if(view === "settings") loadSettings();
@@ -1561,234 +1556,6 @@ $("#bump-dl-btn").addEventListener("click", async ()=>{
     toast(r.message||"Downloading...","success");
     $("#bump-dl-url").value = "";
   } else toast(r.error||"Download failed","error");
-});
-
-// ── Resolver ─────────────────────────────────────────────────────────────
-async function loadResolver(){
-  // Check selenium status
-  try {
-    const s = await api("/resolve/selenium-status");
-    const badge = $("#selenium-badge");
-    if(s.ready){
-      badge.textContent = "Selenium: Ready";
-      badge.className = "badge selenium-ready";
-    } else {
-      badge.textContent = "Selenium: Offline";
-      badge.className = "badge selenium-offline";
-    }
-  } catch(e){
-    const badge = $("#selenium-badge");
-    badge.textContent = "Selenium: Offline";
-    badge.className = "badge selenium-offline";
-  }
-
-  // Load existing batch state
-  try {
-    const b = await api("/resolve/batch/status");
-    if(b.results && b.results.length > 0){
-      renderResolverQueue(b);
-      if(b.running) startResolverPolling();
-    }
-  } catch(e){}
-}
-
-function renderResolverQueue(batch){
-  const body = $("#resolver-queue-body");
-  const prog = $("#resolver-progress");
-  const goBtn = $("#resolver-go");
-
-  if(!batch.results || batch.results.length === 0){
-    body.innerHTML = "";
-    prog.classList.add("hidden");
-    goBtn.disabled = false;
-    return;
-  }
-
-  // Progress bar
-  if(batch.running){
-    prog.classList.remove("hidden");
-    const pct = batch.total > 0 ? Math.round((batch.completed / batch.total) * 100) : 0;
-    $("#resolver-progress-fill").style.width = pct + "%";
-    $("#resolver-progress-label").textContent = `Resolving ${batch.completed + 1} of ${batch.total}...`;
-    goBtn.disabled = true;
-  } else {
-    const done = batch.results.filter(r=>r.status==="done").length;
-    const failed = batch.results.filter(r=>r.status==="failed").length;
-    if(done > 0 || failed > 0){
-      prog.classList.remove("hidden");
-      $("#resolver-progress-fill").style.width = "100%";
-      $("#resolver-progress-label").textContent = `Complete: ${done} resolved, ${failed} failed`;
-    } else {
-      prog.classList.add("hidden");
-    }
-    goBtn.disabled = false;
-  }
-
-  body.innerHTML = batch.results.map((r, i) => {
-    const statusClass = `res-status-${r.status}`;
-    const statusTitle = r.status === "failed" ? (r.error || "Failed") : r.status;
-    const title = r.title || "(untitled)";
-    const url = r.url || "";
-    const truncUrl = url.length > 80 ? url.substring(0, 80) + "..." : url;
-
-    let actions = `<button class="btn btn-sm-danger" data-res-remove="${i}" title="Remove">&times;</button>`;
-    if(r.status === "done" && r.manifest_id){
-      actions = `<button class="btn btn-sm-watch" data-res-play="${r.manifest_id}" data-res-play-title="${title}" data-res-play-url="${url}" title="Test Stream">&#9654;</button> ` + actions;
-    }
-    if(r.status === "failed"){
-      actions = `<button class="btn btn-sm" data-res-retry="${i}" title="Retry">&#8635;</button> ` + actions;
-    }
-
-    return `<tr>
-      <td><span class="res-status ${statusClass}" title="${statusTitle}"></span></td>
-      <td>${title}</td>
-      <td class="res-url" title="${url}">${truncUrl}</td>
-      <td>${actions}</td>
-    </tr>`;
-  }).join("");
-
-  // Bind events
-  $$("[data-res-play]", body).forEach(btn=>{
-    btn.addEventListener("click", ()=> resolverPlay(btn.dataset.resPlay, btn.dataset.resPlayTitle, btn.dataset.resPlayUrl));
-  });
-  $$("[data-res-retry]", body).forEach(btn=>{
-    btn.addEventListener("click", async ()=>{
-      await apiPost(`/resolve/retry/${btn.dataset.resRetry}`);
-      startResolverPolling();
-    });
-  });
-  $$("[data-res-remove]", body).forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      btn.closest("tr").remove();
-    });
-  });
-}
-
-function startResolverPolling(){
-  clearInterval(resolverTimer);
-  resolverTimer = setInterval(async ()=>{
-    try {
-      const b = await api("/resolve/batch/status");
-      renderResolverQueue(b);
-      if(!b.running){
-        clearInterval(resolverTimer); resolverTimer = null;
-        toast(`Batch complete: ${b.results.filter(r=>r.status==="done").length} resolved`, "success");
-      }
-    } catch(e){
-      clearInterval(resolverTimer); resolverTimer = null;
-    }
-  }, 2000);
-}
-
-function resolverPlay(manifestId, title, pageUrl){
-  const player = $("#resolver-player");
-  const video = $("#resolver-video");
-  player.classList.remove("hidden");
-  $("#resolver-player-title").textContent = title || "Test Stream";
-  $("#resolver-player-url").textContent = pageUrl || "";
-  resolverPlayingId = manifestId;
-
-  const url = `/stream/${manifestId}.m3u8`;
-  if(resolverHls){ resolverHls.destroy(); resolverHls = null; }
-
-  if(typeof Hls !== "undefined" && Hls.isSupported()){
-    const hls = new Hls({
-      liveSyncDurationCount: 3,
-      liveMaxLatencyDurationCount: 10,
-      liveDurationInfinity: true,
-      enableWorker: true,
-      lowLatencyMode: false,
-      backBufferLength: 0,
-      maxBufferLength: 30,
-    });
-    hls.loadSource(url);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, ()=> video.play().catch(()=>{}));
-    hls.on(Hls.Events.ERROR, (ev, data)=>{
-      if(data.fatal) toast("Stream playback error", "error");
-    });
-    resolverHls = hls;
-  } else if(video.canPlayType("application/vnd.apple.mpegurl")){
-    video.src = url;
-    video.play().catch(()=>{});
-  } else {
-    toast("HLS not supported in this browser", "error");
-  }
-}
-
-function closeResolverPlayer(){
-  $("#resolver-player").classList.add("hidden");
-  if(resolverHls){ resolverHls.destroy(); resolverHls = null; }
-  const video = $("#resolver-video");
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
-  resolverPlayingId = null;
-}
-
-// Resolve All button
-$("#resolver-go").addEventListener("click", async ()=>{
-  const raw = $("#resolver-urls").value.trim();
-  if(!raw){ toast("Enter at least one URL", "error"); return; }
-
-  let urls = [];
-  const title = $("#resolver-title").value.trim();
-  const timeout = parseInt($("#resolver-timeout").value);
-
-  // Try JSON parse first
-  try {
-    const parsed = JSON.parse(raw);
-    if(Array.isArray(parsed)){
-      urls = parsed.map(e => typeof e === "string" ? {url: e} : e);
-    }
-  } catch(e){
-    // Plain text — one URL per line
-    urls = raw.split("\n").map(l => l.trim()).filter(l => l && l.startsWith("http")).map(u => ({url: u, title: title || null}));
-  }
-
-  if(urls.length === 0){ toast("No valid URLs found", "error"); return; }
-
-  try {
-    const r = await apiPost("/resolve/batch", {urls, timeout});
-    if(r.ok){
-      toast(`Resolving ${urls.length} URL${urls.length > 1 ? "s" : ""}...`, "info");
-      $("#resolver-urls").value = "";
-      $("#resolver-title").value = "";
-      startResolverPolling();
-      // Immediate render of pending state
-      setTimeout(async ()=>{
-        const b = await api("/resolve/batch/status");
-        renderResolverQueue(b);
-      }, 500);
-    } else {
-      toast(r.error || "Failed to start batch", "error");
-    }
-  } catch(e){
-    toast("Failed to start resolve", "error");
-  }
-});
-
-// Clear button
-$("#resolver-clear").addEventListener("click", ()=>{
-  $("#resolver-queue-body").innerHTML = "";
-  $("#resolver-progress").classList.add("hidden");
-  $("#resolver-urls").value = "";
-  $("#resolver-title").value = "";
-  closeResolverPlayer();
-});
-
-// Player close
-$("#resolver-player-close").addEventListener("click", closeResolverPlayer);
-
-// Add to Channels button
-$("#resolver-add-channel").addEventListener("click", async ()=>{
-  if(!resolverPlayingId){ toast("No stream playing", "error"); return; }
-  try {
-    await apiPut(`/channels/${resolverPlayingId}`, {active: true, tags: ["live", "captured", "resolved"]});
-    toast("Channel activated — will appear in M3U output after next regen", "success");
-  } catch(e){
-    toast("Failed to activate channel", "error");
-  }
 });
 
 // ── Player ───────────────────────────────────────────────────────────────

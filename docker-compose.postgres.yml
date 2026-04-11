@@ -68,20 +68,6 @@ services:
       - gluetun
     restart: unless-stopped
 
-  selenium:
-    image: selenium/standalone-chromium:latest
-    container_name: manifold-selenium
-    network_mode: service:gluetun
-    shm_size: 2g
-    depends_on:
-      - gluetun
-    restart: unless-stopped
-    logging:
-      driver: syslog
-      options:
-        syslog-address: "${SYSLOG_ADDRESS:-tcp://localhost:1514}"
-        tag: "manifold-selenium"
-
 networks:
   internal:
 

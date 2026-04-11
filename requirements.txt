@@ -11,4 +11,3 @@ python-dotenv>=1.0
 lxml>=5.0
 m3u8>=4.0
 Pillow>=10.0
-selenium>=4.11
