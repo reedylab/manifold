@@ -7,6 +7,7 @@ import tempfile
 from manifold.config import Config, get_setting
 from manifold.database import get_session
 from manifold.models.manifest import Manifest
+from manifold.models.m3u_source import M3uSource
 from manifold.models.epg import Epg
 
 logger = logging.getLogger(__name__)
@@ -43,8 +44,9 @@ class M3UGeneratorService:
                     Manifest.logo_cached,
                     Manifest.channel_number,
                     Manifest.title_override,
-                    Manifest.stream_mode,
+                    M3uSource.stream_mode,
                 )
+                .outerjoin(M3uSource, Manifest.m3u_source_id == M3uSource.id)
                 .filter(Manifest.active == True)
                 .filter(
                     Manifest.tags.op("@>")('["live"]')
