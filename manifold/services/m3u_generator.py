@@ -43,6 +43,7 @@ class M3UGeneratorService:
                     Manifest.logo_cached,
                     Manifest.channel_number,
                     Manifest.title_override,
+                    Manifest.stream_mode,
                 )
                 .filter(Manifest.active == True)
                 .filter(
@@ -61,12 +62,20 @@ class M3UGeneratorService:
         seen = set()
         lines = ["#EXTM3U"]
         for row in rows:
-            manifest_id, url, title, tvg_id, tags, logo_cached, channel_number, title_override = row
+            manifest_id, url, title, tvg_id, tags, logo_cached, channel_number, title_override, stream_mode = row
             if manifest_id in seen:
                 continue
             seen.add(manifest_id)
             display_title = title_override or title or f"Manifest {manifest_id}"
-            stream_url = f"http://{manifold_host}:{manifold_port}/stream/{manifest_id}.m3u8"
+
+            # Passthrough: emit the original source URL directly so downstream
+            # apps (e.g. channelarr) hit the source stream without manifold
+            # proxying or encoding anything. Only ffmpeg mode needs to route
+            # through manifold's stream router for HLS segmentation + filler.
+            if (stream_mode or "passthrough") == "passthrough":
+                stream_url = url
+            else:
+                stream_url = f"http://{manifold_host}:{manifold_port}/stream/{manifest_id}.m3u8"
 
             # tvg-chno from channel_number
             tvg_chno = f' tvg-chno="{channel_number}"' if channel_number is not None else ""

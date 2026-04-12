@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+*.env
+.claude
+.plan.md
+MIGRATION-PLAN.md
+prompt.txt
+logs/
+data/
+gluetun/
+__pycache__/
+*.pyc
