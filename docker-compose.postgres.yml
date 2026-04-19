@@ -11,6 +11,11 @@ services:
     networks:
       - internal
     restart: unless-stopped
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "${SYSLOG_ADDRESS:-tcp://localhost:1514}"
+        tag: "manifold-db"
 
   manifold:
     build: .
@@ -32,7 +37,7 @@ services:
     networks:
       - internal
     volumes:
-      - output:/app/output
+      - ${OUTPUT_PATH:-/mnt/das-disk-1/media}/m3u:/app/output
       - logos:/app/logos
       - streams:/app/streams
       - bumps:/app/bumps
@@ -42,12 +47,16 @@ services:
     depends_on:
       - postgres
     restart: unless-stopped
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "${SYSLOG_ADDRESS:-tcp://localhost:1514}"
+        tag: "manifold"
 
 networks:
   internal:
 
 volumes:
-  output:
   logos:
   streams:
   bumps:

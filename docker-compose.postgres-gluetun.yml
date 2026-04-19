@@ -11,6 +11,11 @@ services:
     networks:
       - internal
     restart: unless-stopped
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "${SYSLOG_ADDRESS:-tcp://localhost:1514}"
+        tag: "manifold-db"
 
   gluetun:
     image: qmcgaw/gluetun:v3.41.1
@@ -36,6 +41,11 @@ services:
     volumes:
       - ./gluetun:/gluetun
     restart: unless-stopped
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "${SYSLOG_ADDRESS:-tcp://localhost:1514}"
+        tag: "manifold-vpn"
 
   manifold:
     build: .
@@ -57,7 +67,7 @@ services:
       - GLUETUN_CONTROL_PASS=${VPN_CONTROL_PASS}
       - PYTHONUNBUFFERED=1
     volumes:
-      - output:/app/output
+      - ${OUTPUT_PATH:-/mnt/das-disk-1/media}/m3u:/app/output
       - logos:/app/logos
       - streams:/app/streams
       - bumps:/app/bumps
@@ -68,14 +78,16 @@ services:
       - postgres
       - gluetun
     restart: unless-stopped
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "${SYSLOG_ADDRESS:-tcp://localhost:1514}"
+        tag: "manifold"
 
 networks:
   internal:
 
 volumes:
-  output:
-    external: true
-    name: manifold_output
   logos:
     external: true
     name: manifold_logos

@@ -20,7 +20,15 @@ services:
       - "40000:40000"
     volumes:
       - ./gluetun:/gluetun
+    networks:
+      - default
+      - postgres_net
     restart: unless-stopped
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "${SYSLOG_ADDRESS:-tcp://localhost:1514}"
+        tag: "manifold-vpn"
 
   manifold:
     build: .
@@ -42,7 +50,7 @@ services:
       - GLUETUN_CONTROL_PASS=${VPN_CONTROL_PASS}
       - PYTHONUNBUFFERED=1
     volumes:
-      - output:/app/output
+      - ${OUTPUT_PATH:-/mnt/das-disk-1/media}/m3u:/app/output
       - logos:/app/logos
       - streams:/app/streams
       - bumps:/app/bumps
@@ -52,9 +60,22 @@ services:
     depends_on:
       - gluetun
     restart: unless-stopped
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "${SYSLOG_ADDRESS:-tcp://localhost:1514}"
+        tag: "manifold"
+
+networks:
+  # The bundled-postgres compose project creates `manifold_internal` and
+  # attaches the postgres container to it with alias `postgres`. Gluetun
+  # needs to join that network so manifold (sharing gluetun's netns) can
+  # resolve PG_HOST=postgres via docker's embedded DNS.
+  postgres_net:
+    external: true
+    name: manifold_internal
 
 volumes:
-  output:
   logos:
   streams:
   bumps:
