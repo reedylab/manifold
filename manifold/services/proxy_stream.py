@@ -19,6 +19,7 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
@@ -30,9 +31,19 @@ from manifold.models.manifest import Manifest
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL = 2
+POLL_INTERVAL = 0.5  # fast poll once live — upstream publishes every 6-10s and
+                     # our download takes 1-2s, so a longer wait risks missing
+                     # the publish window and drifting behind live edge.
 MAX_SEGMENTS_ON_DISK = 10
 MAX_AUTH_ERRORS = 3
+# Download up to this many segments concurrently when a poll reveals
+# multiple new ones. Serial downloads fall behind real-time for high-
+# bitrate streams where segment download time approaches segment duration.
+DOWNLOAD_CONCURRENCY = 4
+# On first poll, skip ahead to this many segments from the end of the
+# upstream playlist so we start near the live edge instead of backfilling
+# the full window (~6 segments, ~50MB of stale content).
+LIVE_EDGE_SEGMENTS = 2
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -56,6 +67,10 @@ class ProxyStream:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._live = False
+        # One Session across the whole stream — the upstream CDN usually
+        # keeps connections alive, so reusing avoids a TLS handshake on
+        # every segment (200-500ms each, adds up over 100s of segments).
+        self._session = requests.Session()
 
         self._source_domain = ""
         try:
@@ -126,7 +141,7 @@ class ProxyStream:
 
     def _resolve_variant_url(self, url: str) -> str:
         try:
-            r = requests.get(url, headers=self._upstream_headers(), timeout=10)
+            r = self._session.get(url, headers=self._upstream_headers(), timeout=10)
             text = r.text
         except Exception:
             return url
@@ -153,13 +168,17 @@ class ProxyStream:
         auth_errors = 0
         local_seq = 0
         segment_files: list[tuple[int, str, float]] = []
+        first_poll = True
 
         variant_url = self._resolve_variant_url(self.source_url)
         logger.info("[PROXY] %s polling %s", self.manifest_id, variant_url[:120])
 
+        executor = ThreadPoolExecutor(max_workers=DOWNLOAD_CONCURRENCY,
+                                      thread_name_prefix=f"proxy-dl-{self.manifest_id[:8]}")
+
         while not self._stop.is_set():
             try:
-                r = requests.get(variant_url, headers=self._upstream_headers(), timeout=10)
+                r = self._session.get(variant_url, headers=self._upstream_headers(), timeout=10)
                 if r.status_code in (401, 403, 404):
                     auth_errors += 1
                     logger.warning("[PROXY] %s upstream HTTP %d (#%d)",
@@ -208,24 +227,56 @@ class ProxyStream:
                     segments.append((uri, seq, current_duration))
                     seg_pos += 1
 
-            new_count = 0
-            for uri, seq, duration in segments:
-                if self._stop.is_set():
-                    return
-                if seq in seen_seqs:
-                    continue
+            # Figure out which segments are actually new
+            new_segs = [(uri, seq, duration) for uri, seq, duration in segments
+                        if seq not in seen_seqs]
+
+            # On the very first poll, skip backfill — jump to the live edge so
+            # we don't download a window of already-stale content.
+            if first_poll and len(new_segs) > LIVE_EDGE_SEGMENTS:
+                skipped = new_segs[:-LIVE_EDGE_SEGMENTS]
+                for _, seq, _ in skipped:
+                    seen_seqs.add(seq)
+                new_segs = new_segs[-LIVE_EDGE_SEGMENTS:]
+                logger.info("[PROXY] %s starting at live edge (skipped %d older segments)",
+                            self.manifest_id, len(skipped))
+            first_poll = False
+
+            # Mark all new seqs as seen NOW (so re-poll during a long download
+            # doesn't re-queue the same segment).
+            for _, seq, _ in new_segs:
                 seen_seqs.add(seq)
+
+            # Download in parallel — serial downloads drift behind real-time
+            # for high-bitrate streams where each segment is 5-10MB over WAN.
+            assignments = []
+            for uri, seq, duration in new_segs:
                 local_filename = f"seg_{local_seq:05d}.ts"
                 local_path = os.path.join(self.hls_dir, local_filename)
-                try:
-                    self._download_segment(uri, local_path)
-                    segment_files.append((local_seq, local_filename, duration))
-                    local_seq += 1
-                    new_count += 1
-                    self._live = True
-                except Exception as e:
-                    logger.warning("[PROXY] %s segment %s failed: %s",
-                                   self.manifest_id, seq, e)
+                assignments.append((local_seq, local_filename, local_path, uri, seq, duration))
+                local_seq += 1
+
+            new_count = 0
+            if assignments:
+                futures = {
+                    executor.submit(self._download_segment, uri, path): (ls, fname, seq, dur)
+                    for ls, fname, path, uri, seq, dur in assignments
+                }
+                results = {}  # local_seq -> (fname, duration)
+                for fut in futures:
+                    ls, fname, seq, dur = futures[fut]
+                    try:
+                        fut.result()
+                        results[ls] = (fname, dur)
+                        new_count += 1
+                        self._live = True
+                    except Exception as e:
+                        logger.warning("[PROXY] %s segment %s failed: %s",
+                                       self.manifest_id, seq, e)
+                # Append in local_seq order so playlist stays monotonic
+                for ls in sorted(results):
+                    fname, dur = results[ls]
+                    segment_files.append((ls, fname, dur))
 
             # Rolling window of segments on disk
             while len(segment_files) > MAX_SEGMENTS_ON_DISK:
@@ -247,17 +298,35 @@ class ProxyStream:
                 min_keep = min(s[1] for s in segments)
                 seen_seqs = {s for s in seen_seqs if s >= min_keep}
 
-            self._stop.wait(POLL_INTERVAL)
+            # If we just downloaded, re-poll immediately — the CDN may have
+            # published another segment while we were fetching, and waiting
+            # POLL_INTERVAL here is how we drift behind live edge.
+            if new_count == 0:
+                self._stop.wait(POLL_INTERVAL)
+
+        executor.shutdown(wait=False)
+        try:
+            self._session.close()
+        except Exception:
+            pass
 
     def _download_segment(self, uri: str, local_path: str):
-        r = requests.get(uri, headers=self._upstream_headers(),
-                         timeout=15, stream=True)
+        t0 = time.time()
+        r = self._session.get(uri, headers=self._upstream_headers(),
+                         timeout=30, stream=True)
         r.raise_for_status()
+        total = 0
         with open(local_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=65536):
                 if self._stop.is_set():
                     return
                 f.write(chunk)
+                total += len(chunk)
+        dt = time.time() - t0
+        if dt > 0:
+            logger.info("[PROXY] %s %s %d KB in %.2fs = %.1f Mbps",
+                        self.manifest_id, os.path.basename(local_path),
+                        total // 1024, dt, total * 8 / dt / 1e6)
 
     def _write_playlist(self, segment_files):
         playlist = os.path.join(self.hls_dir, "stream.m3u8")
