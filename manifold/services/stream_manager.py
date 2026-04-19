@@ -390,6 +390,39 @@ class StreamManagerService:
         return True
 
     @staticmethod
+    def start_proxy(manifest_id, source_url, headers=None, channel_title=""):
+        """Proxy-mode variant of start_stream: spins up a segment poller
+        instead of an ffmpeg HLS pipeline. Same _streams dict, same cleanup
+        paths — ProxyStream duck-types StreamSession's public surface."""
+        from manifold.services.proxy_stream import ProxyStream
+        if StreamManagerService.is_running(manifest_id):
+            StreamManagerService.touch(manifest_id)
+            return True
+        with _lock:
+            active = sum(1 for s in _streams.values() if s.is_running)
+            if active >= MAX_STREAMS:
+                logger.warning("Max streams (%d)", MAX_STREAMS)
+                return False
+
+        session = ProxyStream(manifest_id, source_url, headers, channel_title)
+        session.start()
+        with _lock:
+            _streams[manifest_id] = session
+
+        playlist = StreamManagerService.playlist_path(manifest_id)
+        for _ in range(30):  # proxy waits for the first segment download
+            if os.path.isfile(playlist) and os.path.getsize(playlist) > 0:
+                logger.info("Proxy stream ready: %s", manifest_id)
+                return True
+            if not session.is_running:
+                with _lock:
+                    _streams.pop(manifest_id, None)
+                return False
+            time.sleep(0.5)
+        logger.warning("Proxy playlist not ready after 15s: %s", manifest_id)
+        return True
+
+    @staticmethod
     def stop_stream(manifest_id):
         with _lock:
             s = _streams.pop(manifest_id, None)

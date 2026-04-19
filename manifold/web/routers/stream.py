@@ -52,6 +52,16 @@ def stream_playlist(manifest_id: str, src: str = Query(default=None)):
         if os.path.isfile(playlist):
             return _serve_local_playlist(manifest_id, playlist)
         return _proxy_m3u8(manifest_id, url)
+    elif stream_mode == "proxy":
+        StreamManagerService.touch(manifest_id)
+        if not StreamManagerService.is_running(manifest_id):
+            StreamManagerService.start_proxy(manifest_id, url, headers, channel_title=title or "")
+        playlist = StreamManagerService.playlist_path(manifest_id)
+        if os.path.isfile(playlist):
+            return _serve_local_playlist(manifest_id, playlist)
+        # No filler in proxy mode — if the first segment hasn't landed yet,
+        # fall through to the request-time proxy for this single playlist hit.
+        return _proxy_m3u8(manifest_id, url)
     else:
         return _proxy_m3u8(manifest_id, url)
 
