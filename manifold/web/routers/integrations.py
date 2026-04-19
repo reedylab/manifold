@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = 10
 
+# Serialize rebind calls — without this, two concurrent threads can each
+# fetch the provider list, both iterate it, and each POST creates a brand-new
+# provider, so running two rebinds at once doubles providers instead of
+# rebinding in place.
+_rebind_lock = threading.Lock()
+
 
 class JellyfinConfig(BaseModel):
     url: str = ""
@@ -90,47 +96,84 @@ def refresh_jellyfin(url: str, api_key: str) -> dict:
 
 
 def rebind_jellyfin(url: str, api_key: str) -> dict:
-    """Force Jellyfin to re-bind all XMLTV listings providers pointing at
-    manifold.xml. Snapshots each matching provider config, DELETEs it, then
-    re-POSTs with the same settings — which drops stale channel mappings and
-    re-auto-matches against the current M3U/XMLTV. Guide refresh fires after.
+    """Force Jellyfin to re-bind the XMLTV listings provider pointing at
+    manifold.xml. DELETE the existing provider, POST a fresh copy with the
+    same settings, then trigger guide refresh. Drops stale channel mappings
+    and forces Jellyfin to rediscover every channel from the current M3U.
 
-    Non-manifold XMLTV providers (e.g. a separate channelarr listing) are
-    left alone so this can't nuke other integrations.
+    Self-healing: if we find multiple manifold.xml providers (a previous
+    runaway accumulated duplicates, or two concurrent rebinds raced), we
+    delete all but one BEFORE the swap so the result is always a single
+    provider. Non-manifold XMLTV providers (e.g. channelarr) are untouched.
+
+    Never runs concurrently with itself (module-level lock). Bails with a
+    clear error rather than adding duplicates if any DELETE doesn't confirm
+    — the #1 mode of runaway accumulation was silent DELETE 500s while
+    POSTs kept creating new providers.
     """
-    base = url.rstrip("/")
-    headers = _jf_headers(api_key)
+    if not _rebind_lock.acquire(blocking=False):
+        logger.info("[INTEGRATION] Skipping rebind — another rebind is already running")
+        return {"ok": False, "error": "rebind already in progress"}
     try:
+        base = url.rstrip("/")
+        headers = _jf_headers(api_key)
+
         r = requests.get(f"{base}/System/Configuration/livetv", headers=headers, timeout=_TIMEOUT)
         r.raise_for_status()
         livetv = r.json()
         providers = livetv.get("ListingProviders", []) or []
 
-        rebound = 0
-        for p in providers:
-            if (p.get("Type") or "").lower() != "xmltv":
-                continue
-            path = (p.get("Path") or "").lower()
-            if "manifold.xml" not in path:
-                continue
-            pid = p.get("Id")
-            if not pid:
-                continue
-            # Snapshot all existing settings verbatim; drop the Id so Jellyfin
-            # generates a new one and treats it as a fresh provider.
-            fresh = {k: v for k, v in p.items() if k != "Id"}
-            try:
-                requests.delete(f"{base}/LiveTv/ListingProviders", headers=headers,
-                                params={"id": pid}, timeout=_TIMEOUT)
-                requests.post(f"{base}/LiveTv/ListingProviders", headers=headers,
-                              json=fresh, timeout=_TIMEOUT).raise_for_status()
-                rebound += 1
-                logger.info("[INTEGRATION] Rebound Jellyfin XMLTV provider: %s", p.get("Path"))
-            except Exception as e:
-                logger.warning("[INTEGRATION] Rebind failed for provider %s: %s", pid, e)
+        matches = [p for p in providers
+                   if (p.get("Type") or "").lower() == "xmltv"
+                   and "manifold.xml" in (p.get("Path") or "").lower()
+                   and p.get("Id")]
 
-        if rebound == 0:
+        if not matches:
             return {"ok": False, "error": "No XMLTV provider found pointing at manifold.xml"}
+
+        # Self-healing: keep only the first, delete any extras up front.
+        # This converges to a single provider even if the state is polluted.
+        if len(matches) > 1:
+            logger.warning("[INTEGRATION] Found %d manifold.xml providers — "
+                           "deleting extras before rebind", len(matches))
+            for extra in matches[1:]:
+                try:
+                    dr = requests.delete(f"{base}/LiveTv/ListingProviders",
+                                         headers=headers,
+                                         params={"id": extra["Id"]},
+                                         timeout=_TIMEOUT)
+                    dr.raise_for_status()
+                except Exception as e:
+                    logger.warning("[INTEGRATION] Could not delete duplicate %s: %s",
+                                   extra["Id"], e)
+
+        keeper = matches[0]
+        pid = keeper["Id"]
+        # Snapshot all existing settings verbatim; drop the Id so Jellyfin
+        # generates a new one and treats it as a fresh provider.
+        fresh = {k: v for k, v in keeper.items() if k != "Id"}
+
+        # DELETE MUST succeed before we POST. Silent DELETE failures are
+        # exactly how we ended up with tens of thousands of duplicates.
+        try:
+            dr = requests.delete(f"{base}/LiveTv/ListingProviders", headers=headers,
+                                 params={"id": pid}, timeout=_TIMEOUT)
+            dr.raise_for_status()
+        except Exception as e:
+            logger.warning("[INTEGRATION] DELETE of provider %s failed (%s) — "
+                           "skipping POST to avoid duplicating", pid, e)
+            return {"ok": False, "error": f"delete failed: {e}"}
+
+        try:
+            pr = requests.post(f"{base}/LiveTv/ListingProviders", headers=headers,
+                               json=fresh, timeout=_TIMEOUT)
+            pr.raise_for_status()
+        except Exception as e:
+            logger.warning("[INTEGRATION] POST of fresh provider failed: %s", e)
+            return {"ok": False, "error": f"post failed: {e}"}
+
+        rebound = 1
+        logger.info("[INTEGRATION] Rebound Jellyfin XMLTV provider: %s", keeper.get("Path"))
 
         # Refresh guide so the re-bound provider parses the XMLTV immediately.
         refresh_result = refresh_jellyfin(url, api_key)
@@ -138,6 +181,8 @@ def rebind_jellyfin(url: str, api_key: str) -> dict:
     except Exception as e:
         logger.exception("[INTEGRATION] Jellyfin rebind failed")
         return {"ok": False, "error": str(e)}
+    finally:
+        _rebind_lock.release()
 
 
 def _refresh_or_rebind(url: str, api_key: str) -> dict:
