@@ -167,7 +167,7 @@ class ProxyStream:
         seen_seqs: set = set()
         auth_errors = 0
         local_seq = 0
-        segment_files: list[tuple[int, str, float]] = []
+        segment_files: list[tuple[int, str, float, bool]] = []  # (seq, file, dur, discontinuous_before)
         first_poll = True
 
         variant_url = self._resolve_variant_url(self.source_url)
@@ -213,10 +213,13 @@ class ProxyStream:
 
             segments = []
             current_duration = 6.0
+            pending_discontinuity = False
             seg_pos = 0
             for line in r.text.splitlines():
                 line = line.strip()
-                if line.startswith("#EXTINF:"):
+                if line == "#EXT-X-DISCONTINUITY":
+                    pending_discontinuity = True
+                elif line.startswith("#EXTINF:"):
                     try:
                         current_duration = float(line.split(":")[1].split(",")[0])
                     except (ValueError, IndexError):
@@ -224,63 +227,87 @@ class ProxyStream:
                 elif line and not line.startswith("#"):
                     uri = urljoin(r.url, line)
                     seq = media_seq + seg_pos
-                    segments.append((uri, seq, current_duration))
+                    segments.append((uri, seq, current_duration, pending_discontinuity))
+                    pending_discontinuity = False
                     seg_pos += 1
 
             # Figure out which segments are actually new
-            new_segs = [(uri, seq, duration) for uri, seq, duration in segments
-                        if seq not in seen_seqs]
+            new_segs = [tup for tup in segments if tup[1] not in seen_seqs]
+
+            # Detect upstream MEDIA-SEQUENCE gaps — if we've seen seg N and the
+            # next new one is N+2+, a segment was skipped over on the upstream
+            # side (most commonly an ad-insertion or stream reset). Mark the
+            # next segment as discontinuous so clients' PTS trackers reset.
+            if new_segs and seen_seqs:
+                next_seq = new_segs[0][1]
+                prev_max = max(s for s in seen_seqs)
+                if next_seq > prev_max + 1:
+                    uri, seq, dur, _ = new_segs[0]
+                    new_segs[0] = (uri, seq, dur, True)
+                    logger.info("[PROXY] %s upstream seq gap (%d -> %d), "
+                                "marking seg discontinuous",
+                                self.manifest_id, prev_max, next_seq)
 
             # On the very first poll, skip backfill — jump to the live edge so
             # we don't download a window of already-stale content.
             if first_poll and len(new_segs) > LIVE_EDGE_SEGMENTS:
                 skipped = new_segs[:-LIVE_EDGE_SEGMENTS]
-                for _, seq, _ in skipped:
-                    seen_seqs.add(seq)
+                for tup in skipped:
+                    seen_seqs.add(tup[1])
                 new_segs = new_segs[-LIVE_EDGE_SEGMENTS:]
                 logger.info("[PROXY] %s starting at live edge (skipped %d older segments)",
                             self.manifest_id, len(skipped))
             first_poll = False
 
-            # Mark all new seqs as seen NOW (so re-poll during a long download
-            # doesn't re-queue the same segment).
-            for _, seq, _ in new_segs:
-                seen_seqs.add(seq)
+            # Mark seqs seen now so re-polls during long downloads don't requeue
+            for tup in new_segs:
+                seen_seqs.add(tup[1])
 
-            # Download in parallel — serial downloads drift behind real-time
-            # for high-bitrate streams where each segment is 5-10MB over WAN.
-            assignments = []
-            for uri, seq, duration in new_segs:
-                local_filename = f"seg_{local_seq:05d}.ts"
-                local_path = os.path.join(self.hls_dir, local_filename)
-                assignments.append((local_seq, local_filename, local_path, uri, seq, duration))
-                local_seq += 1
-
+            # Download in parallel; allocate local_seq only for successful
+            # downloads so a failed one doesn't leave a hole in the local
+            # sequence (holes break client playlists).
             new_count = 0
-            if assignments:
-                futures = {
-                    executor.submit(self._download_segment, uri, path): (ls, fname, seq, dur)
-                    for ls, fname, path, uri, seq, dur in assignments
-                }
-                results = {}  # local_seq -> (fname, duration)
+            if new_segs:
+                futures = {}
+                for i, (uri, seq, dur, disc) in enumerate(new_segs):
+                    tmp_path = os.path.join(self.hls_dir, f".tmp_{seq}.ts")
+                    futures[executor.submit(self._download_segment, uri, tmp_path)] = (
+                        i, tmp_path, seq, dur, disc,
+                    )
+
+                ok_results = {}  # upstream_index -> (tmp_path, duration, discontinuity)
                 for fut in futures:
-                    ls, fname, seq, dur = futures[fut]
+                    idx, tmp_path, seq, dur, disc = futures[fut]
                     try:
                         fut.result()
-                        results[ls] = (fname, dur)
-                        new_count += 1
+                        ok_results[idx] = (tmp_path, dur, disc)
                         self._live = True
                     except Exception as e:
                         logger.warning("[PROXY] %s segment %s failed: %s",
                                        self.manifest_id, seq, e)
-                # Append in local_seq order so playlist stays monotonic
-                for ls in sorted(results):
-                    fname, dur = results[ls]
-                    segment_files.append((ls, fname, dur))
+                        try:
+                            os.remove(tmp_path)
+                        except OSError:
+                            pass
+
+                # Rename into gap-free local_seq order and append in upstream order
+                for idx in sorted(ok_results):
+                    tmp_path, dur, disc = ok_results[idx]
+                    local_filename = f"seg_{local_seq:05d}.ts"
+                    final_path = os.path.join(self.hls_dir, local_filename)
+                    try:
+                        os.rename(tmp_path, final_path)
+                    except OSError as e:
+                        logger.warning("[PROXY] %s rename failed: %s",
+                                       self.manifest_id, e)
+                        continue
+                    segment_files.append((local_seq, local_filename, dur, disc))
+                    local_seq += 1
+                    new_count += 1
 
             # Rolling window of segments on disk
             while len(segment_files) > MAX_SEGMENTS_ON_DISK:
-                _, old, _ = segment_files.pop(0)
+                _, old, _, _ = segment_files.pop(0)
                 try:
                     os.remove(os.path.join(self.hls_dir, old))
                 except OSError:
@@ -329,16 +356,23 @@ class ProxyStream:
                         total // 1024, dt, total * 8 / dt / 1e6)
 
     def _write_playlist(self, segment_files):
+        """segment_files: list of (local_seq, filename, duration, discontinuity_before)"""
         playlist = os.path.join(self.hls_dir, "stream.m3u8")
         first_seq = segment_files[0][0]
-        max_dur = max(d for _, _, d in segment_files)
+        max_dur = max(d for _, _, d, _ in segment_files)
         lines = [
             "#EXTM3U",
             "#EXT-X-VERSION:3",
             f"#EXT-X-TARGETDURATION:{int(max_dur) + 1}",
             f"#EXT-X-MEDIA-SEQUENCE:{first_seq}",
         ]
-        for _, filename, duration in segment_files:
+        # EXT-X-DISCONTINUITY-SEQUENCE must reflect discontinuities we've
+        # rolled off the window. Track it monotonically from stream start.
+        for i, (_, filename, duration, disc) in enumerate(segment_files):
+            # The first segment in a window can't be "discontinuous" — the
+            # marker only makes sense between segments.
+            if disc and i > 0:
+                lines.append("#EXT-X-DISCONTINUITY")
             lines.append(f"#EXTINF:{duration:.3f},")
             lines.append(filename)
         with open(playlist, "w") as f:
