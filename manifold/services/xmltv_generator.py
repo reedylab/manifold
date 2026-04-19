@@ -108,12 +108,26 @@ class XMLTVGeneratorService:
             "source-info-name": "Manifold IPTV",
         })
 
-        # Deduplicate channels
+        # Deduplicate channels. A manifest may match multiple Epg rows (via
+        # tvg_id OR title), so prefer the row where Epg.channel_id == tvg_id
+        # to avoid picking a stale row that still matches by title. Without
+        # this, rename of a source's channel ids leaves orphan rows that
+        # masquerade as valid matches and inject old programmes.
         channels = {}
         for manifest_id, title, tvg_id, logo_cached, channel_number, title_override, epg_ch_id, epg_ch_name, icon_url, epg_data in rows:
-            if manifest_id in channels:
+            is_tvg_match = bool(tvg_id and epg_ch_id == tvg_id)
+            existing = channels.get(manifest_id)
+            if existing and existing["tvg_match"] and not is_tvg_match:
+                # Already have a tvg_id-matched row for this manifest; don't
+                # let a weaker title-matched row overwrite it.
                 continue
-            channel_id = epg_ch_id or tvg_id or manifest_id
+            if existing and not is_tvg_match:
+                # Both are non-tvg matches; keep the first.
+                continue
+            # Must match the M3U's tvg-id (which is Manifest.tvg_id) so Jellyfin
+            # can link programmes to channels. Prefer tvg_id, then the EPG row's
+            # id if no tvg_id is set, then the manifest id as last resort.
+            channel_id = tvg_id or epg_ch_id or manifest_id
             display_title = title_override or title or f"Channel {channel_id}"
             channels[manifest_id] = {
                 "channel_id": channel_id,
@@ -121,6 +135,7 @@ class XMLTVGeneratorService:
                 "logo_cached": logo_cached,
                 "icon_url": icon_url,
                 "epg_data": epg_data,
+                "tvg_match": is_tvg_match,
             }
 
         # Write <channel> elements
