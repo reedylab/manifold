@@ -75,6 +75,31 @@ def add_epg_source(data: dict = Body(default={})):
     return result
 
 
+@router.put("/epg-sources/{source_id}")
+def update_epg_source(source_id: str, data: dict = Body(default={})):
+    from manifold.models.epg_source import EpgSource
+    with get_session() as session:
+        source = session.query(EpgSource).filter_by(id=source_id).first()
+        if not source:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if "name" in data:
+            name = (data.get("name") or "").strip()
+            if not name:
+                return JSONResponse({"error": "name cannot be empty"}, status_code=400)
+            source.name = name
+        if "url" in data:
+            url = (data.get("url") or "").strip()
+            if not url:
+                return JSONResponse({"error": "url cannot be empty"}, status_code=400)
+            source.url = url
+        if "m3u_source_id" in data:
+            mid = (data.get("m3u_source_id") or "").strip()
+            if not mid:
+                return JSONResponse({"error": "m3u_source_id cannot be empty"}, status_code=400)
+            source.m3u_source_id = mid
+    return {"ok": True}
+
+
 @router.delete("/epg-sources/{source_id}")
 def delete_epg_source(source_id: str):
     ok = EpgIngestService.delete_source(source_id)
@@ -136,6 +161,18 @@ def update_m3u_source(source_id: str, data: dict = Body(default={})):
             return JSONResponse({"error": "not found"}, status_code=404)
         if "stream_mode" in data:
             source.stream_mode = data["stream_mode"]
+        if "auto_activate" in data:
+            source.auto_activate = bool(data["auto_activate"])
+        if "name" in data:
+            name = (data.get("name") or "").strip()
+            if not name:
+                return JSONResponse({"error": "name cannot be empty"}, status_code=400)
+            source.name = name
+        if "url" in data:
+            url = (data.get("url") or "").strip()
+            if not url:
+                return JSONResponse({"error": "url cannot be empty"}, status_code=400)
+            source.url = url
     return {"ok": True}
 
 

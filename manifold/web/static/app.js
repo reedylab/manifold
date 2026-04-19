@@ -35,6 +35,12 @@ async function apiDelete(path){
   return api(path, {method:"DELETE"});
 }
 
+function esc(s){
+  return String(s==null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+
 function toast(msg, type){
   const t = $("#toast");
   t.textContent = msg;
@@ -555,20 +561,17 @@ function renderM3uSources(){
   body.innerHTML = m3uSources.map(s=>{
     const urlShort = s.url.length > 60 ? s.url.substring(0,57) + "..." : s.url;
     const mode = s.stream_mode || "passthrough";
+    const modeClass = mode === "ffmpeg" ? "tag-pill tag-sports" : "tag-pill";
     return `<tr>
       <td class="td-check"><input type="checkbox" data-bulk-sources="${s.id}"></td>
       <td>${s.name}</td>
       <td class="url-cell" title="${s.url}">${urlShort}</td>
-      <td>
-        <select class="filter-status stream-mode-select" data-source-mode="${s.id}" style="font-size:12px;padding:4px 8px">
-          <option value="passthrough" ${mode==="passthrough"?"selected":""}>Passthrough</option>
-          <option value="ffmpeg" ${mode==="ffmpeg"?"selected":""}>FFmpeg</option>
-        </select>
-      </td>
+      <td><span class="${modeClass}">${mode}</span></td>
       <td>${s.channel_count}</td>
       <td>${fmtDate(s.last_ingested_at)}</td>
       <td class="td-actions"><div class="action-btns">
         <button class="btn-sm" data-ingest-source="${s.id}">Ingest</button>
+        <button class="btn-sm" data-edit-source="${s.id}">Edit</button>
         <button class="btn-sm btn-sm-danger" data-delete-source="${s.id}">Delete</button>
       </div></td>
     </tr>`;
@@ -576,12 +579,8 @@ function renderM3uSources(){
 
   sourcesBulk.bindRows(body);
 
-  // Stream mode change
-  $$("[data-source-mode]", body).forEach(sel=>{
-    sel.addEventListener("change", async ()=>{
-      await apiPut(`/m3u-sources/${sel.dataset.sourceMode}`, {stream_mode: sel.value});
-      toast(`Stream mode set to ${sel.value}`, "success");
-    });
+  $$("[data-edit-source]", body).forEach(btn=>{
+    btn.addEventListener("click", ()=> openEditSourceModal(btn.dataset.editSource));
   });
 
   $$("[data-ingest-source]", body).forEach(btn=>{
@@ -611,14 +610,35 @@ function renderM3uSources(){
   });
 }
 
-// Add source modal
+// Add / Edit source modal
+let _editingM3uSourceId = null;
 function openAddSourceModal(){
+  _editingM3uSourceId = null;
+  $("#add-source-modal-title").textContent = "Add M3U Source";
+  $("#add-source-save").textContent = "Add";
   $("#add-source-name").value = "";
   $("#add-source-url").value = "";
+  $("#add-source-stream-mode").value = "passthrough";
+  $("#add-source-auto-activate").checked = false;
+  $("#file-browser").classList.add("hidden");
+  $("#add-source-modal").classList.remove("hidden");
+}
+function openEditSourceModal(sourceId){
+  const s = m3uSources.find(x => x.id === sourceId);
+  if(!s){ toast("Source not found", "error"); return; }
+  _editingM3uSourceId = sourceId;
+  $("#add-source-modal-title").textContent = "Edit M3U Source";
+  $("#add-source-save").textContent = "Save";
+  $("#add-source-name").value = s.name || "";
+  $("#add-source-url").value = s.url || "";
+  $("#add-source-stream-mode").value = s.stream_mode || "passthrough";
+  $("#add-source-auto-activate").checked = !!s.auto_activate;
+  $("#file-browser").classList.add("hidden");
   $("#add-source-modal").classList.remove("hidden");
 }
 function closeAddSourceModal(){
   $("#add-source-modal").classList.add("hidden");
+  _editingM3uSourceId = null;
 }
 
 $("#btn-add-source").addEventListener("click", openAddSourceModal);
@@ -628,22 +648,12 @@ $("#add-source-modal").addEventListener("click", e=>{
   if(e.target.classList.contains("modal-overlay")) closeAddSourceModal();
 });
 
-// File browser for M3U source
-$("#add-source-browse").addEventListener("click", ()=>{
-  const fb = $("#file-browser");
-  if(fb.classList.contains("hidden")){
-    loadFileBrowser("/browse");
-    fb.classList.remove("hidden");
-  } else {
-    fb.classList.add("hidden");
-  }
-});
-
-async function loadFileBrowser(path){
+// File browser — reused by M3U + EPG modals
+async function loadFileBrowser(path, cfg){
   const res = await api(`/browse?path=${encodeURIComponent(path)}`);
   if(res.error){ toast(res.error, "error"); return; }
-  $("#fb-path").textContent = res.path;
-  const list = $("#fb-list");
+  $(cfg.pathSel).textContent = res.path;
+  const list = $(cfg.listSel);
   let html = "";
   if(res.parent !== null){
     html += `<div class="fb-entry fb-up" data-fb-dir="${res.parent}"><span class="fb-icon">&#x2B06;</span><span class="fb-name">..</span></div>`;
@@ -659,35 +669,74 @@ async function loadFileBrowser(path){
   list.innerHTML = html;
 
   $$("[data-fb-dir]", list).forEach(el=>{
-    el.addEventListener("click", ()=> loadFileBrowser(el.dataset.fbDir));
+    el.addEventListener("click", ()=> loadFileBrowser(el.dataset.fbDir, cfg));
   });
   $$("[data-fb-file]", list).forEach(el=>{
     el.addEventListener("click", ()=>{
-      $("#add-source-url").value = el.dataset.fbFile;
+      $(cfg.urlSel).value = el.dataset.fbFile;
       // Auto-fill name from filename if empty
-      if(!$("#add-source-name").value.trim()){
+      const nameEl = $(cfg.nameSel);
+      if(nameEl && !nameEl.value.trim()){
         const parts = el.dataset.fbFile.split("/");
         const fname = parts[parts.length-1].replace(/\.[^.]+$/, "");
-        $("#add-source-name").value = fname;
+        nameEl.value = fname;
       }
-      $("#file-browser").classList.add("hidden");
+      $(cfg.containerSel).classList.add("hidden");
     });
   });
 }
 
+function toggleFileBrowser(cfg){
+  const fb = $(cfg.containerSel);
+  if(fb.classList.contains("hidden")){
+    loadFileBrowser("/browse", cfg);
+    fb.classList.remove("hidden");
+  } else {
+    fb.classList.add("hidden");
+  }
+}
+
+const _M3U_FB = {
+  containerSel: "#file-browser",
+  pathSel: "#fb-path",
+  listSel: "#fb-list",
+  urlSel: "#add-source-url",
+  nameSel: "#add-source-name",
+};
+const _EPG_FB = {
+  containerSel: "#epg-file-browser",
+  pathSel: "#epg-fb-path",
+  listSel: "#epg-fb-list",
+  urlSel: "#add-epg-source-url",
+  nameSel: "#add-epg-source-name",
+};
+
+$("#add-source-browse").addEventListener("click", ()=> toggleFileBrowser(_M3U_FB));
+$("#add-epg-source-browse").addEventListener("click", ()=> toggleFileBrowser(_EPG_FB));
+
 $("#add-source-save").addEventListener("click", async ()=>{
   const name = $("#add-source-name").value.trim();
   const url = $("#add-source-url").value.trim();
+  const stream_mode = $("#add-source-stream-mode").value;
+  const auto_activate = $("#add-source-auto-activate").checked;
   if(!name || !url){
     toast("Name and URL are required", "error");
     return;
   }
-  const res = await apiPost("/m3u-sources", {name, url});
+  let res;
+  if(_editingM3uSourceId){
+    res = await apiPut(`/m3u-sources/${_editingM3uSourceId}`, {name, url, stream_mode, auto_activate});
+  } else {
+    res = await apiPost("/m3u-sources", {name, url});
+    if(!res.error && res.id && (stream_mode !== "passthrough" || auto_activate)){
+      await apiPut(`/m3u-sources/${res.id}`, {stream_mode, auto_activate});
+    }
+  }
   if(res.error){
     toast(res.error, "error");
     return;
   }
-  toast("Source added", "success");
+  toast(_editingM3uSourceId ? "Source updated" : "Source added", "success");
   closeAddSourceModal();
   loadM3uSources();
 });
@@ -749,12 +798,17 @@ function renderEpgSources(){
       <td>${fmtDate(s.last_ingested_at)}</td>
       <td class="td-actions"><div class="action-btns">
         <button class="btn-sm" data-ingest-epg="${s.id}">Ingest</button>
+        <button class="btn-sm" data-edit-epg="${s.id}">Edit</button>
         <button class="btn-sm btn-sm-danger" data-delete-epg="${s.id}">Delete</button>
       </div></td>
     </tr>`;
   }).join("");
 
   epgsourcesBulk.bindRows(body);
+
+  $$("[data-edit-epg]", body).forEach(btn=>{
+    btn.addEventListener("click", ()=> openEditEpgSourceModal(btn.dataset.editEpg));
+  });
 
   $$("[data-ingest-epg]", body).forEach(btn=>{
     btn.addEventListener("click", async ()=>{
@@ -783,19 +837,39 @@ function renderEpgSources(){
   });
 }
 
-// Add EPG Source modal
-async function openAddEpgSourceModal(){
-  $("#add-epg-source-name").value = "";
-  $("#add-epg-source-url").value = "";
-  // Populate M3U source dropdown
+// Add / Edit EPG Source modal
+let _editingEpgSourceId = null;
+async function _populateEpgM3uDropdown(selectedId){
   const sources = await api("/m3u-sources");
   const sel = $("#add-epg-source-m3u");
   sel.innerHTML = '<option value="">-- Select M3U Source --</option>' +
-    sources.map(s=>`<option value="${s.id}">${s.name}</option>`).join("");
+    sources.map(s=>`<option value="${s.id}" ${s.id===selectedId?"selected":""}>${s.name}</option>`).join("");
+}
+async function openAddEpgSourceModal(){
+  _editingEpgSourceId = null;
+  $("#add-epg-source-modal-title").textContent = "Add EPG Source";
+  $("#add-epg-source-save").textContent = "Add";
+  $("#add-epg-source-name").value = "";
+  $("#add-epg-source-url").value = "";
+  $("#epg-file-browser").classList.add("hidden");
+  await _populateEpgM3uDropdown("");
+  $("#add-epg-source-modal").classList.remove("hidden");
+}
+async function openEditEpgSourceModal(sourceId){
+  const s = epgSources.find(x => x.id === sourceId);
+  if(!s){ toast("EPG source not found", "error"); return; }
+  _editingEpgSourceId = sourceId;
+  $("#add-epg-source-modal-title").textContent = "Edit EPG Source";
+  $("#add-epg-source-save").textContent = "Save";
+  $("#add-epg-source-name").value = s.name || "";
+  $("#add-epg-source-url").value = s.url || "";
+  $("#epg-file-browser").classList.add("hidden");
+  await _populateEpgM3uDropdown(s.m3u_source_id || "");
   $("#add-epg-source-modal").classList.remove("hidden");
 }
 function closeAddEpgSourceModal(){
   $("#add-epg-source-modal").classList.add("hidden");
+  _editingEpgSourceId = null;
 }
 
 $("#btn-add-epg-source").addEventListener("click", openAddEpgSourceModal);
@@ -813,12 +887,14 @@ $("#add-epg-source-save").addEventListener("click", async ()=>{
     toast("Name, URL, and linked M3U source are required", "error");
     return;
   }
-  const res = await apiPost("/epg-sources", {name, url, m3u_source_id});
+  const res = _editingEpgSourceId
+    ? await apiPut(`/epg-sources/${_editingEpgSourceId}`, {name, url, m3u_source_id})
+    : await apiPost("/epg-sources", {name, url, m3u_source_id});
   if(res.error){
     toast(res.error, "error");
     return;
   }
-  toast("EPG source added", "success");
+  toast(_editingEpgSourceId ? "EPG source updated" : "EPG source added", "success");
   closeAddEpgSourceModal();
   loadEpgSources();
 });
@@ -1081,7 +1157,53 @@ function drawDisk(id, pct, used, total){
 async function loadSettings(){
   settings = await api("/settings");
   renderSettings();
+  _updateExportLinks();
   $("#sidebar-db").textContent = settings.pg_host + ":" + settings.pg_port + "/" + settings.pg_db;
+}
+
+function _bindCopyButtons(root){
+  $$("[data-copy-path]", root||document).forEach(btn=>{
+    if(btn._copyBound) return;
+    btn._copyBound = true;
+    btn.addEventListener("click", ()=>{
+      const path = btn.dataset.copyPath;
+      const url = window.location.protocol + "//" + window.location.host + path;
+      copyToClipboard(url);
+      btn.classList.add("copied");
+      btn.textContent = "\u2713";
+      setTimeout(()=>{ btn.classList.remove("copied"); btn.innerHTML = "\u2398"; }, 1500);
+      toast("Copied: " + url, "success");
+    });
+  });
+}
+
+function _updateExportLinks(){
+  const links = $("#output-links");
+  if(!links) return;
+  if(settings.export_strategy === "local"){
+    const path = (settings.export_local_path || "/app/output").replace(/\/+$/, "");
+    links.innerHTML = `
+      <span class="output-link output-link-path" title="M3U file path">${esc(path)}/manifold.m3u</span>
+      <button class="copy-btn" data-copy-path-literal="${esc(path)}/manifold.m3u" title="Copy path">&#x2398;</button>
+      <span class="output-link output-link-path" title="XMLTV file path">${esc(path)}/manifold.xml</span>
+      <button class="copy-btn" data-copy-path-literal="${esc(path)}/manifold.xml" title="Copy path">&#x2398;</button>`;
+    $$("[data-copy-path-literal]", links).forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const text = btn.dataset.copyPathLiteral;
+        copyToClipboard(text);
+        btn.classList.add("copied");
+        btn.textContent = "\u2713";
+        setTimeout(()=>{ btn.classList.remove("copied"); btn.innerHTML = "\u2398"; }, 1500);
+        toast("Copied: " + text, "success");
+      });
+    });
+  } else {
+    links.innerHTML = `
+      <a href="/output/manifold.m3u" target="_blank" class="output-link" title="M3U Playlist URL">M3U</a><button class="copy-btn" data-copy-path="/output/manifold.m3u" title="Copy M3U URL">&#x2398;</button>
+      <a href="/output/manifold.xml" target="_blank" class="output-link" title="XMLTV EPG URL">EPG</a><button class="copy-btn" data-copy-path="/output/manifold.xml" title="Copy EPG URL">&#x2398;</button>
+      <a href="/discover.json" target="_blank" class="output-link output-link-hdhr" title="HDHomeRun (for Plex)">HDHR</a><button class="copy-btn" data-copy-path="/discover.json" title="Copy HDHR URL">&#x2398;</button>`;
+    _bindCopyButtons(links);
+  }
 }
 
 function renderSettings(){
@@ -1103,6 +1225,8 @@ function renderSettings(){
     renderTasksView();
   } else if(currentSettingsSub === "scheduler"){
     title.textContent = "Scheduler";
+    const strategy = settings.export_strategy || "url";
+    const localPath = settings.export_local_path || "";
     container.innerHTML = `<div class="settings-fields">
       <div class="setting-field">
         <label>M3U/XMLTV Regen Interval (minutes)</label>
@@ -1113,15 +1237,31 @@ function renderSettings(){
         <input type="number" id="set-cleanup" value="${settings.scheduler_cleanup_hours||1}" min="1">
       </div>
       <div class="setting-field">
-        <label>Auto-Activation Interval (hours)</label>
-        <input type="number" id="set-activation" value="${settings.scheduler_activation_hours||4}" min="1">
-      </div>
-      <div class="setting-field">
         <label>VPN Auto-Rotate Interval (minutes, 0 = disabled)</label>
         <input type="number" id="set-vpn-rotate" value="${settings.vpn_auto_rotate_minutes||0}" min="0">
         <span class="field-hint">Cycles the gluetun WireGuard tunnel through your SERVER_CITIES list on this interval. Brief 5-15s connectivity blip per rotate; manifold's stream proxy and clients recover automatically on next playlist poll.</span>
       </div>
+      <div class="setting-field">
+        <label>Export Strategy</label>
+        <select id="set-export-strategy" class="filter-status" style="width:100%">
+          <option value="url" ${strategy==="url"?"selected":""}>URL (HTTP)</option>
+          <option value="local" ${strategy==="local"?"selected":""}>Local Path (Shared Storage)</option>
+        </select>
+        <span class="field-hint">How downstream apps (Jellyfin, etc.) read manifold's outputs. Local path avoids HTTP caching and is preferred when both containers mount the same volume.</span>
+      </div>
+      <div class="setting-field" id="set-export-path-field" style="${strategy==="local"?"":"display:none"}">
+        <label>Local Path</label>
+        <input type="text" id="set-export-path" value="${esc(localPath)}" placeholder="/app/output">
+        <span class="field-hint">Directory where manifold.m3u and manifold.xml live (as visible to consumers). Header shows this path when Local is selected.</span>
+      </div>
     </div>`;
+    const strategySel = $("#set-export-strategy");
+    if(strategySel){
+      strategySel.addEventListener("change", ()=>{
+        const field = $("#set-export-path-field");
+        if(field) field.style.display = strategySel.value === "local" ? "" : "none";
+      });
+    }
   } else if(currentSettingsSub === "images"){
     title.textContent = "Images";
     container.innerHTML = '<div id="images-container"><div class="empty-state">Loading...</div></div>';
@@ -1156,8 +1296,135 @@ function renderSettings(){
         <input type="text" id="set-bridge-port" value="${settings.bridge_port||""}" placeholder="8080">
       </div>
     </div>`;
+  } else if(currentSettingsSub === "integrations"){
+    title.textContent = "Integrations";
+    container.innerHTML = '<div id="integrations-container" style="padding:16px 0"><div class="empty-state">Loading...</div></div>';
+    loadIntegrations();
   }
 }
+
+// ── Integrations ────────────────────────────────────────────────────────
+let _integData = {};
+
+async function loadIntegrations(){
+  try {
+    _integData = await api("/integrations/status");
+    renderIntegrations();
+  } catch(e){
+    const c = $("#integrations-container");
+    if(c) c.innerHTML = '<div class="empty-state">Failed to load integrations</div>';
+  }
+}
+
+function renderIntegrations(){
+  const c = $("#integrations-container");
+  if(!c) return;
+  const jf = _integData.jellyfin || {};
+  function badge(configured){
+    if(!configured) return `<span class="integ-badge integ-not-configured">Not Configured</span>`;
+    return `<span class="integ-badge integ-configured">Configured</span>`;
+  }
+  c.innerHTML = `<div class="integ-grid">
+    <div class="integ-card" data-integ="jellyfin">
+      <div class="integ-card-header">
+        <span class="integ-card-name">Jellyfin</span>
+        ${badge(jf.configured)}
+      </div>
+      <div class="integ-card-desc">Trigger Jellyfin's guide refresh after M3U/XMLTV regen so it picks up new data without waiting for its cache TTL.</div>
+    </div>
+  </div>`;
+  $$(".integ-card", c).forEach(card=>{
+    card.addEventListener("click", ()=> openIntegModal(card.dataset.integ));
+  });
+}
+
+function closeIntegModal(){
+  $("#integ-modal-overlay").classList.add("hidden");
+}
+
+function openIntegModal(type){
+  const overlay = $("#integ-modal-overlay");
+  const body = $("#integ-modal-body");
+  const titleEl = $("#integ-modal-title");
+  overlay.classList.remove("hidden");
+  if(type === "jellyfin"){
+    const jf = _integData.jellyfin || {};
+    titleEl.textContent = "Jellyfin Integration";
+    body.innerHTML = `
+      <div class="integ-modal-fields">
+        <label>Server URL<input type="text" id="integ-jf-url" value="${esc(jf.url||"")}" placeholder="http://192.168.20.34:8096"></label>
+        <label>API Key<input type="text" id="integ-jf-key" value="${esc(jf.api_key||"")}" placeholder="Jellyfin API key"></label>
+        <div class="integ-toggle-row">
+          <label class="scraper-toggle"><input type="checkbox" id="integ-jf-auto" ${jf.auto_refresh?"checked":""}><span class="slider"></span></label>
+          <span>Auto-refresh Jellyfin after M3U/XMLTV regeneration</span>
+        </div>
+        <div class="integ-toggle-row">
+          <label class="scraper-toggle"><input type="checkbox" id="integ-jf-rebind" ${jf.rebind_mode?"checked":""}><span class="slider"></span></label>
+          <span>Force rebind on every refresh (drops stale channel bindings — use while adding/removing channels)</span>
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--text-muted);margin-bottom:12px">Refresh triggers Jellyfin's guide data task. Rebind additionally deletes + re-adds the XMLTV listings provider so Jellyfin rediscovers every channel from scratch. Neither modifies tuner host URLs — configure those once in Jellyfin's Live TV settings.</p>
+      <div class="integ-modal-actions">
+        <button class="btn btn-primary btn-sm" id="integ-jf-save">Save</button>
+        <button class="btn btn-sm" id="integ-jf-test">Test Connection</button>
+        <button class="btn btn-sm" id="integ-jf-refresh">Force Refresh</button>
+      </div>
+      <div id="integ-jf-result" style="margin-top:12px;font-size:12px"></div>`;
+
+    async function saveConfig(){
+      return apiPut("/integrations/jellyfin/config", {
+        url: $("#integ-jf-url").value.trim(),
+        api_key: $("#integ-jf-key").value.trim(),
+        auto_refresh: $("#integ-jf-auto").checked,
+        rebind_mode: $("#integ-jf-rebind").checked,
+      });
+    }
+
+    $("#integ-jf-save").addEventListener("click", async ()=>{
+      try {
+        const r = await saveConfig();
+        if(r.ok){ toast("Jellyfin config saved", "success"); loadIntegrations(); }
+        else toast("Save failed", "error");
+      } catch(e){ toast("Save failed", "error"); }
+    });
+
+    $("#integ-jf-test").addEventListener("click", async ()=>{
+      const res = $("#integ-jf-result");
+      res.textContent = "Testing...";
+      try {
+        await saveConfig();
+        const d = await apiPost("/integrations/jellyfin/test");
+        if(d.ok){
+          res.innerHTML = `<span style="color:var(--ok)">Connected: ${esc(d.server_name)} v${esc(d.version)}</span>`;
+          loadIntegrations();
+        } else {
+          res.innerHTML = `<span style="color:var(--danger)">${esc(d.error)}</span>`;
+        }
+      } catch(e){ res.innerHTML = '<span style="color:var(--danger)">Connection failed</span>'; }
+    });
+
+    $("#integ-jf-refresh").addEventListener("click", async ()=>{
+      const res = $("#integ-jf-result");
+      const willRebind = $("#integ-jf-rebind").checked;
+      res.textContent = willRebind ? "Saving + rebinding provider..." : "Saving + triggering guide refresh...";
+      try {
+        await saveConfig();  // persist checkbox state first so backend dispatches correctly
+        const d = await apiPost("/integrations/jellyfin/refresh");
+        if(d.ok){
+          const msg = d.mode === "rebind" ? "Rebind + guide refresh triggered" : "Guide refresh triggered";
+          res.innerHTML = `<span style="color:var(--ok)">${msg}</span>`;
+        } else {
+          res.innerHTML = `<span style="color:var(--danger)">${esc(d.error)}</span>`;
+        }
+      } catch(e){ res.innerHTML = '<span style="color:var(--danger)">Refresh failed</span>'; }
+    });
+  }
+}
+
+$("#integ-modal-close").addEventListener("click", closeIntegModal);
+$("#integ-modal-overlay").addEventListener("click", (e)=>{
+  if(e.target.classList.contains("modal-overlay")) closeIntegModal();
+});
 
 // ── Tasks View ──────────────────────────────────────────────────────────
 const TASK_INTERVAL_OPTIONS = {
@@ -1471,14 +1738,12 @@ $("#save-settings").addEventListener("click", async ()=>{
   const payload = {};
   const regen = $("#set-regen");
   const cleanup = $("#set-cleanup");
-  const activation = $("#set-activation");
   const host = $("#set-bridge-host");
   const port = $("#set-bridge-port");
   const tmdbKey = $("#set-tmdb-key");
 
   if(regen) payload.scheduler_regen_minutes = regen.value;
   if(cleanup) payload.scheduler_cleanup_hours = cleanup.value;
-  if(activation) payload.scheduler_activation_hours = activation.value;
   const vpnRotate = $("#set-vpn-rotate");
   if(vpnRotate) payload.vpn_auto_rotate_minutes = vpnRotate.value;
   if(host) payload.bridge_host = host.value;
@@ -1490,8 +1755,14 @@ $("#save-settings").addEventListener("click", async ()=>{
   const dummyBlock = $("#set-dummy-block");
   if(dummyDays) payload.dummy_epg_days = dummyDays.value;
   if(dummyBlock) payload.dummy_epg_block_minutes = dummyBlock.value;
+  const exportStrategy = $("#set-export-strategy");
+  if(exportStrategy) payload.export_strategy = exportStrategy.value;
+  const exportPath = $("#set-export-path");
+  if(exportPath) payload.export_local_path = exportPath.value;
 
   await apiPost("/settings", payload);
+  settings = await api("/settings");
+  if(typeof _updateExportLinks === "function") _updateExportLinks();
   const status = $("#settings-status");
   status.textContent = "Saved";
   status.className = "settings-status success";

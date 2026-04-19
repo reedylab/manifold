@@ -21,6 +21,18 @@ except Exception as e:
 _scheduler = None
 
 
+def _trigger_auto_push():
+    """Fire Jellyfin auto-refresh (and any future integrations) after regen.
+
+    Swallows errors so a broken integration never takes down the scheduler.
+    """
+    try:
+        from manifold.web.routers.integrations import auto_push_jellyfin
+        auto_push_jellyfin()
+    except Exception as e:
+        logger.warning("Auto-push hook failed: %s", e)
+
+
 def start_scheduler(app):
     global _scheduler
 
@@ -41,6 +53,7 @@ def start_scheduler(app):
         try:
             M3UGeneratorService.generate()
             XMLTVGeneratorService.generate()
+            _trigger_auto_push()
         except Exception as e:
             logger.error("M3U/XMLTV regen failed: %s", e)
 
@@ -74,6 +87,7 @@ def start_scheduler(app):
             M3uIngestService.refresh_all()
             M3UGeneratorService.generate()
             XMLTVGeneratorService.generate()
+            _trigger_auto_push()
         except Exception as e:
             logger.error("M3U refresh failed: %s", e)
 
@@ -81,6 +95,7 @@ def start_scheduler(app):
         try:
             EpgIngestService.ingest_all()
             XMLTVGeneratorService.generate()
+            _trigger_auto_push()
         except Exception as e:
             logger.error("EPG refresh failed: %s", e)
 

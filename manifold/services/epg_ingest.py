@@ -104,17 +104,23 @@ class EpgIngestService:
 
         logger.info("Ingesting EPG source: %s (%s)", source_name, source_url)
 
-        # Fetch the XMLTV data
+        # Fetch the XMLTV data — local file or remote URL
         try:
-            r = requests.get(source_url, headers={"User-Agent": USER_AGENT}, timeout=60)
-            r.raise_for_status()
+            if source_url.startswith("/") or source_url.startswith("file://"):
+                file_path = source_url.replace("file://", "")
+                with open(file_path, "rb") as f:
+                    content = f.read()
+            else:
+                r = requests.get(source_url, headers={"User-Agent": USER_AGENT}, timeout=60)
+                r.raise_for_status()
+                content = r.content
         except Exception as e:
             logger.error("Failed to fetch EPG %s: %s", source_url, e)
             return {"error": str(e), "channels": 0}
 
         # Parse XMLTV
         try:
-            root = etree.fromstring(r.content)
+            root = etree.fromstring(content)
         except Exception as e:
             logger.error("Failed to parse XMLTV from %s: %s", source_url, e)
             return {"error": f"XML parse error: {e}", "channels": 0}
@@ -157,6 +163,17 @@ class EpgIngestService:
             if channel_id not in programmes_by_channel:
                 programmes_by_channel[channel_id] = []
             programmes_by_channel[channel_id].append(prog_xml)
+
+        # Drop any stale Epg rows for this source whose channel_id no longer
+        # appears in the XMLTV. Without this, when a source renames a channel
+        # id (e.g. channelarr moved from ch-XXXX to UUIDs), the old rows linger
+        # and get picked up by the XMLTV generator's title-match fallback.
+        current_ids = set(xmltv_channels.keys())
+        with get_session() as session:
+            existing_rows = session.query(Epg).filter_by(epg_source_id=source_id).all()
+            for r in existing_rows:
+                if r.channel_id not in current_ids:
+                    session.delete(r)
 
         # Upsert EPG entries — only for channels that have a matching tvg-id in our manifests
         channel_count = 0

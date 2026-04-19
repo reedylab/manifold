@@ -52,6 +52,9 @@ async def lifespan(app: FastAPI):
             if "stream_mode" not in m3u_cols:
                 conn.execute(text("ALTER TABLE m3u_sources ADD COLUMN stream_mode VARCHAR DEFAULT 'passthrough'"))
                 conn.commit()
+            if "auto_activate" not in m3u_cols:
+                conn.execute(text("ALTER TABLE m3u_sources ADD COLUMN auto_activate BOOLEAN DEFAULT FALSE NOT NULL"))
+                conn.commit()
 
         if "epg" in tables:
             epg_cols = [c["name"] for c in insp.get_columns("epg")]
@@ -79,7 +82,7 @@ def health():
     return {"status": "ok"}
 
 # Include routers
-from manifold.web.routers import ui, channels, sources, output, hdhr, stream, logo, guide, media, system
+from manifold.web.routers import ui, channels, sources, output, hdhr, stream, logo, guide, media, system, integrations
 
 app.include_router(ui.router)
 app.include_router(channels.router, prefix="/api")
@@ -91,3 +94,4 @@ app.include_router(logo.router, prefix="/logo")
 app.include_router(guide.router, prefix="/api")
 app.include_router(media.router, prefix="/api")
 app.include_router(system.router, prefix="/api")
+app.include_router(integrations.router, prefix="/api")

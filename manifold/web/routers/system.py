@@ -18,11 +18,12 @@ router = APIRouter()
 
 SETTING_KEYS = [
     "bridge_host", "bridge_port",
-    "scheduler_regen_minutes", "scheduler_cleanup_hours", "scheduler_activation_hours",
+    "scheduler_regen_minutes", "scheduler_cleanup_hours",
     "dummy_epg_days", "dummy_epg_block_minutes",
     "scheduler_image_enrichment_hours", "tmdb_api_key", "fanart_api_key",
     "scheduler_m3u_refresh_hours", "scheduler_epg_refresh_hours",
     "vpn_auto_rotate_minutes", "vpn_scheduled_rotate_time",
+    "export_strategy", "export_local_path",
 ]
 
 
@@ -32,6 +33,11 @@ SETTING_KEYS = [
 def generate():
     m3u_count = M3UGeneratorService.generate()
     xmltv_result = XMLTVGeneratorService.generate()
+    try:
+        from manifold.web.routers.integrations import auto_push_jellyfin
+        auto_push_jellyfin()
+    except Exception as e:
+        logger.warning("Auto-push hook failed: %s", e)
     if isinstance(xmltv_result, dict):
         return {"ok": True, "m3u_channels": m3u_count, **xmltv_result}
     return {"ok": True, "m3u_channels": m3u_count, "xmltv_channels": xmltv_result}
@@ -125,8 +131,6 @@ def get_settings():
         result["scheduler_regen_minutes"] = "5"
     if not result.get("scheduler_cleanup_hours"):
         result["scheduler_cleanup_hours"] = "1"
-    if not result.get("scheduler_activation_hours"):
-        result["scheduler_activation_hours"] = "4"
     if not result.get("dummy_epg_days"):
         result["dummy_epg_days"] = "7"
     if not result.get("dummy_epg_block_minutes"):
@@ -141,6 +145,10 @@ def get_settings():
         result["scheduler_epg_refresh_hours"] = "12"
     if not result.get("vpn_auto_rotate_minutes"):
         result["vpn_auto_rotate_minutes"] = "0"
+    if not result.get("export_strategy"):
+        result["export_strategy"] = "url"
+    if result.get("export_local_path") is None:
+        result["export_local_path"] = ""
     result["pg_host"] = cfg.PG_HOST
     result["pg_port"] = cfg.PG_PORT
     result["pg_db"] = cfg.PG_DB

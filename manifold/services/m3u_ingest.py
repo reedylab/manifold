@@ -117,6 +117,7 @@ class M3uIngestService:
                     "name": r.name,
                     "url": r.url,
                     "stream_mode": r.stream_mode or "passthrough",
+                    "auto_activate": bool(r.auto_activate),
                     "channel_count": r.channel_count or 0,
                     "last_ingested_at": r.last_ingested_at.isoformat() if r.last_ingested_at else None,
                     "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -253,8 +254,10 @@ class M3uIngestService:
                 return {"error": "source not found"}
             source_name = source.name
             source_url = source.url
+            auto_activate = bool(source.auto_activate)
 
-        logger.info("Ingesting M3U source: %s (%s)", source_name, source_url)
+        logger.info("Ingesting M3U source: %s (%s, auto_activate=%s)",
+                     source_name, source_url, auto_activate)
 
         # Fetch the playlist — local file or remote URL
         try:
@@ -362,6 +365,14 @@ class M3uIngestService:
                     manifest.header_profile_id = header_profile_id
                     manifest.mime = "application/vnd.apple.mpegurl"
                     manifest.kind = "master"
+                    # Auto-activate: bring channel back live if the source has
+                    # the toggle on. We apply this to existing channels too,
+                    # not just new ones — otherwise flipping the toggle on
+                    # only affects never-seen channels, which means pre-existing
+                    # inactive rows stay inactive forever. If auto_activate is
+                    # off, leave active alone so manual changes stick.
+                    if auto_activate:
+                        manifest.active = True
                     # Channel is present in source — clear stale status
                     manifest.stale_since = None
                 else:
@@ -385,7 +396,7 @@ class M3uIngestService:
                         tvg_id=tvg_id,
                         tvg_logo=tvg_logo,
                         tags=computed_tags,
-                        active=False,
+                        active=auto_activate,
                     )
                     session.add(manifest)
                     title_map[channel_title] = manifest
