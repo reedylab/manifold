@@ -167,6 +167,56 @@ class M3uIngestService:
         return {"ok": True, "ingested": len(source_list), "channels": total_channels}
 
     @staticmethod
+    def _cleanup_disappeared(source_id: str, seen_ids: set) -> tuple[int, int]:
+        """Handle manifests that were in this source but aren't anymore.
+
+        - Events: deleted immediately (ephemeral)
+        - Live channels first time missing: marked stale + deactivated
+        - Live channels stale >12h: deleted
+
+        Returns (stale_count, deleted_count). Safe to call with empty seen_ids
+        — skips cleanup in that case so a transient fetch failure can't wipe
+        an entire source.
+        """
+        STALE_GRACE_HOURS = 12
+        if not seen_ids:
+            return (0, 0)
+
+        stale = 0
+        deleted = 0
+        with get_session() as session:
+            all_source_manifests = (
+                session.query(Manifest)
+                .filter(Manifest.m3u_source_id == source_id)
+                .all()
+            )
+            now = datetime.now(timezone.utc)
+            for m in all_source_manifests:
+                if m.id in seen_ids:
+                    continue
+
+                is_event = "event" in (m.tags or [])
+                if is_event:
+                    logger.info("Deleting disappeared event: %s", m.title)
+                    session.delete(m)
+                    deleted += 1
+                elif m.stale_since is None:
+                    m.stale_since = now
+                    m.active = False
+                    logger.info("Channel went stale (deactivated): %s", m.title)
+                    stale += 1
+                else:
+                    stale_hours = (now - m.stale_since).total_seconds() / 3600
+                    if stale_hours >= STALE_GRACE_HOURS:
+                        logger.info("Deleting stale channel (gone %.1fh): %s",
+                                    stale_hours, m.title)
+                        session.delete(m)
+                        deleted += 1
+                    else:
+                        stale += 1
+        return (stale, deleted)
+
+    @staticmethod
     def refresh_all() -> dict:
         """Re-ingest all M3U sources and clean up stale/disappeared channels.
 
@@ -175,8 +225,6 @@ class M3uIngestService:
         - Live channels stale for >12h: deleted
         - Channels that reappear: stale status cleared automatically by ingest_source()
         """
-        STALE_GRACE_HOURS = 12
-
         with get_session() as session:
             sources = session.query(M3uSource).all()
             source_list = [(s.id, s.name) for s in sources]
@@ -188,55 +236,18 @@ class M3uIngestService:
         total_deleted = 0
 
         for source_id, source_name in source_list:
-            # Ingest returns seen_ids — the set of manifest IDs present in the playlist
             result = M3uIngestService.ingest_source(source_id)
             seen_ids = result.get("seen_ids", set())
-
             if not seen_ids:
-                # If ingest failed or returned no channels, don't clean up
-                # (could be a fetch error — don't wipe everything)
                 logger.warning("M3U refresh: no channels seen for %s, skipping cleanup", source_name)
                 continue
+            # Cleanup now lives inside ingest_source, but double-calling is a
+            # no-op because anything disappeared was already marked stale on
+            # the ingest pass. The counts returned here aren't used by the
+            # scheduler (the job logs its own summary) — leave them as 0 to
+            # avoid double-counting.
 
-            # Find manifests belonging to this source that were NOT seen
-            with get_session() as session:
-                all_source_manifests = (
-                    session.query(Manifest)
-                    .filter(Manifest.m3u_source_id == source_id)
-                    .all()
-                )
-
-                now = datetime.now(timezone.utc)
-
-                for m in all_source_manifests:
-                    if m.id in seen_ids:
-                        continue  # Still in playlist — already handled by ingest_source
-
-                    is_event = "event" in (m.tags or [])
-
-                    if is_event:
-                        # Events are ephemeral — delete immediately when gone
-                        logger.info("Deleting disappeared event: %s", m.title)
-                        session.delete(m)
-                        total_deleted += 1
-                    elif m.stale_since is None:
-                        # First time missing — mark stale and deactivate
-                        m.stale_since = now
-                        m.active = False
-                        logger.info("Channel went stale (deactivated): %s", m.title)
-                        total_stale += 1
-                    else:
-                        # Already stale — check grace period
-                        stale_hours = (now - m.stale_since).total_seconds() / 3600
-                        if stale_hours >= STALE_GRACE_HOURS:
-                            logger.info("Deleting stale channel (gone %.1fh): %s", stale_hours, m.title)
-                            session.delete(m)
-                            total_deleted += 1
-                        else:
-                            total_stale += 1
-
-        logger.info("M3U refresh complete: %d sources, %d stale, %d deleted",
-                     len(source_list), total_stale, total_deleted)
+        logger.info("M3U refresh complete: %d sources", len(source_list))
         return {
             "ok": True,
             "refreshed": len(source_list),
@@ -405,6 +416,13 @@ class M3uIngestService:
                 seen_ids.add(manifest.id)
                 channel_count += 1
 
+        # Clean up channels that disappeared from this source. Without this,
+        # deletions upstream (e.g. channelarr removing a channel) never
+        # propagate to manifold until the 4-hour refresh_all cron runs. The
+        # cleanup is safe — it only looks at manifests belonging to this
+        # source and skips anything still present (seen_ids).
+        stale, deleted = M3uIngestService._cleanup_disappeared(source_id, seen_ids)
+
         # Update source metadata
         with get_session() as session:
             source = session.query(M3uSource).filter_by(id=source_id).first()
@@ -412,7 +430,8 @@ class M3uIngestService:
                 source.channel_count = channel_count
                 source.last_ingested_at = datetime.utcnow()
 
-        logger.info("Ingested %d channels from %s", channel_count, source_name)
+        logger.info("Ingested %d channels from %s (stale=%d, deleted=%d)",
+                     channel_count, source_name, stale, deleted)
 
         # Auto-sync logos for newly ingested channels
         import threading
