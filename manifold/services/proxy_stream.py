@@ -35,7 +35,12 @@ POLL_INTERVAL = 0.5  # fast poll once live — upstream publishes every 6-10s an
                      # our download takes 1-2s, so a longer wait risks missing
                      # the publish window and drifting behind live edge.
 MAX_SEGMENTS_ON_DISK = 10
-MAX_AUTH_ERRORS = 3
+# How long to tolerate a non-200 playlist fetch before bailing. Expressed in
+# seconds (not retries) because POLL_INTERVAL can change. 30s absorbs the
+# common classes of transient failure (CDN node lag, token rotation, brief
+# upstream restart) while still bailing fast enough on a permanently-dead
+# stream that the client can reconnect and try something else.
+MAX_FAILURE_SECONDS = 30
 # Download up to this many segments concurrently when a poll reveals
 # multiple new ones. Serial downloads fall behind real-time for high-
 # bitrate streams where segment download time approaches segment duration.
@@ -165,10 +170,10 @@ class ProxyStream:
 
     def _poll_loop(self):
         seen_seqs: set = set()
-        auth_errors = 0
         local_seq = 0
         segment_files: list[tuple[int, str, float, bool]] = []  # (seq, file, dur, discontinuous_before)
         first_poll = True
+        first_failure_at: Optional[float] = None  # wall-clock of first non-200 in a run
 
         variant_url = self._resolve_variant_url(self.source_url)
         logger.info("[PROXY] %s polling %s", self.manifest_id, variant_url[:120])
@@ -179,22 +184,35 @@ class ProxyStream:
         while not self._stop.is_set():
             try:
                 r = self._session.get(variant_url, headers=self._upstream_headers(), timeout=10)
-                if r.status_code in (401, 403, 404):
-                    auth_errors += 1
-                    logger.warning("[PROXY] %s upstream HTTP %d (#%d)",
-                                   self.manifest_id, r.status_code, auth_errors)
-                    if auth_errors >= MAX_AUTH_ERRORS:
-                        logger.error("[PROXY] %s bailing after %d auth errors",
-                                     self.manifest_id, auth_errors)
+                if r.status_code != 200:
+                    # Track cumulative failure time rather than count. CDN
+                    # hiccups (node lag, token rotation, brief restarts) are
+                    # common and transient; only bail when the stream is
+                    # consistently broken for MAX_FAILURE_SECONDS.
+                    now = time.time()
+                    if first_failure_at is None:
+                        first_failure_at = now
+                    elapsed = now - first_failure_at
+                    logger.warning("[PROXY] %s upstream HTTP %d (%.1fs of failure)",
+                                   self.manifest_id, r.status_code, elapsed)
+                    if elapsed >= MAX_FAILURE_SECONDS:
+                        logger.error("[PROXY] %s bailing — upstream unreachable for %ds",
+                                     self.manifest_id, int(elapsed))
                         return
                     self._stop.wait(POLL_INTERVAL)
                     continue
-                if r.status_code != 200:
-                    self._stop.wait(POLL_INTERVAL)
-                    continue
-                auth_errors = 0
+                first_failure_at = None
             except Exception as e:
-                logger.warning("[PROXY] %s fetch failed: %s", self.manifest_id, e)
+                now = time.time()
+                if first_failure_at is None:
+                    first_failure_at = now
+                elapsed = now - first_failure_at
+                logger.warning("[PROXY] %s fetch failed (%.1fs of failure): %s",
+                               self.manifest_id, elapsed, e)
+                if elapsed >= MAX_FAILURE_SECONDS:
+                    logger.error("[PROXY] %s bailing — fetch errors for %ds",
+                                 self.manifest_id, int(elapsed))
+                    return
                 self._stop.wait(POLL_INTERVAL)
                 continue
 
