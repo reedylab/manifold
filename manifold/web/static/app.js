@@ -190,25 +190,35 @@ $("#channels-bulk-deactivate").addEventListener("click", async ()=>{
 
 async function loadChannels(){
   channels = await api("/channels");
-  _populateTagFilter();
+  _populateChannelFilters();
   renderChannels();
   $("#channel-count").textContent = channels.filter(c=>c.active).length + " active";
 }
 
-function _populateTagFilter(){
-  const sel = $("#channel-tag-filter");
+function _populateChannelFilters(){
+  const tagSel = $("#channel-tag-filter");
   const allTags = new Set();
   channels.forEach(ch=> (ch.tags||[]).forEach(t=> allTags.add(t)));
-  const prev = sel.value;
-  sel.innerHTML = '<option value="">All Tags</option>' +
+  const prevTag = tagSel.value;
+  tagSel.innerHTML = '<option value="">All tags (any)</option>' +
     [...allTags].sort().map(t=>`<option value="${t}">${t}</option>`).join("");
-  sel.value = prev || "";
+  tagSel.value = prevTag || "";
+
+  const primarySel = $("#channel-primary-tag-filter");
+  const allPrimary = new Set();
+  channels.forEach(ch=> { if(ch.primary_tag) allPrimary.add(ch.primary_tag); });
+  const prevPrimary = primarySel.value;
+  primarySel.innerHTML = '<option value="">All primary</option>' +
+    [...allPrimary].sort().map(t=>`<option value="${t}">${t}</option>`).join("");
+  primarySel.value = prevPrimary || "";
 }
 
 function _getFilteredChannels(){
   const search = ($("#channel-search").value||"").toLowerCase();
   const filter = $("#channel-filter").value;
   const tagFilter = $("#channel-tag-filter").value;
+  const primaryFilter = $("#channel-primary-tag-filter").value;
+  const modeFilter = $("#channel-mode-filter").value;
   return channels.filter(ch=>{
     if(search && !ch.title.toLowerCase().includes(search)) return false;
     if(filter==="active" && !ch.active) return false;
@@ -216,19 +226,30 @@ function _getFilteredChannels(){
     if(filter==="mapped" && !ch.epg_mapped) return false;
     if(filter==="unmapped" && ch.epg_mapped) return false;
     if(tagFilter && !(ch.tags||[]).includes(tagFilter)) return false;
+    if(primaryFilter && ch.primary_tag !== primaryFilter) return false;
+    if(modeFilter && (ch.activation_mode||"auto") !== modeFilter) return false;
     return true;
   });
 }
 
+function _tagClassName(tag){
+  return "tag-" + String(tag).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
 function _tagPills(tags){
-  return (tags||[]).map(t=>{
-    let cls = "tag-pill";
-    if(t==="live") cls += " tag-live";
-    else if(t==="event") cls += " tag-event";
-    else if(t==="sports") cls += " tag-sports";
-    else if(t==="news") cls += " tag-news";
-    return `<span class="${cls}">${t}</span>`;
-  }).join("");
+  return (tags||[]).map(t=> `<span class="tag-pill ${_tagClassName(t)}">${t}</span>`).join("");
+}
+
+function _primaryTagPill(tag){
+  if(!tag) return '<span class="tag-pill tag-uncategorized">—</span>';
+  return `<span class="tag-pill ${_tagClassName(tag)}">${tag}</span>`;
+}
+
+function _modePill(mode){
+  const m = mode || "auto";
+  if(m === "force_on") return '<span class="mode-pill mode-on" title="Pinned on — ignores tag rules">pinned on</span>';
+  if(m === "force_off") return '<span class="mode-pill mode-off" title="Pinned off — ignores tag rules">pinned off</span>';
+  return '<span class="mode-pill mode-auto" title="Rule-driven — tag rules decide active state">auto</span>';
 }
 
 function renderChannels(){
@@ -244,12 +265,14 @@ function renderChannelTable(){
   const filtered = _getFilteredChannels();
   const body = $("#channels-body");
   if(!filtered.length){
-    body.innerHTML = '<tr><td colspan="7" class="empty-state">No channels found</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="empty-state">No channels found</td></tr>';
     return;
   }
 
   body.innerHTML = filtered.map(ch=>{
     const tags = _tagPills(ch.tags);
+    const primary = _primaryTagPill(ch.primary_tag);
+    const mode = _modePill(ch.activation_mode);
     const epg = ch.epg_mapped
       ? `<span class="epg-badge epg-mapped">${ch.epg_channel_id}</span>`
       : `<span class="epg-badge epg-unmapped">None</span>`;
@@ -263,6 +286,8 @@ function renderChannelTable(){
       <td class="td-chno"><input type="number" class="chno-input" value="${ch.channel_number||''}" data-chno="${ch.id}" placeholder="-" min="1"></td>
       <td class="title-clickable"><span class="ch-title-wrap">${logoHtml}${ch.title_override ? `<span>${ch.title_override}</span><span class="ch-source-title">${ch.title}</span>` : (ch.title||"Untitled")}</span></td>
       <td>${tags}</td>
+      <td>${primary}</td>
+      <td>${mode}</td>
       <td>${epg}</td>
       <td>
         <label class="toggle">
@@ -352,39 +377,123 @@ function renderChannelTiles(){
 $("#channel-search").addEventListener("input", renderChannels);
 $("#channel-filter").addEventListener("change", renderChannels);
 $("#channel-tag-filter").addEventListener("change", renderChannels);
+$("#channel-primary-tag-filter").addEventListener("change", renderChannels);
+$("#channel-mode-filter").addEventListener("change", renderChannels);
 $("#btn-refresh-channels").addEventListener("click", loadChannels);
-$("#btn-auto-number").addEventListener("click", ()=>{
+$("#btn-auto-number").addEventListener("click", async ()=>{
   const filtered = _getFilteredChannels();
   const hasFilters = ($("#channel-search").value||"").trim() !== ""
     || $("#channel-filter").value !== "all"
-    || $("#channel-tag-filter").value !== "";
-  const scopeLabel = hasFilters ? `${filtered.length} filtered channels` : `all ${channels.length} channels`;
+    || $("#channel-tag-filter").value !== ""
+    || $("#channel-primary-tag-filter").value !== ""
+    || $("#channel-mode-filter").value !== "";
+
+  const activeChannels = channels.filter(c=>c.active);
+  const filteredActive = filtered.filter(c=>c.active);
+  const ranges = await api("/number-ranges");
 
   const modal = document.createElement("div");
   modal.className = "modal-overlay";
   modal.innerHTML = `<div class="modal-content renumber-modal">
-    <h3>Auto-Number Channels</h3>
-    <div class="setting-field" style="margin-bottom:16px">
-      <label>Start at</label>
-      <input type="number" id="renumber-start" value="1" min="1" style="width:100px">
-    </div>
-    <div class="setting-field" style="margin-bottom:16px">
+    <h3>Renumber Channels</h3>
+    <p class="field-hint" style="margin:0 0 14px">Wipes existing numbers in scope and reassigns from per-tag ranges. Manual numbers are overwritten.</p>
+
+    <div class="setting-field" style="margin-bottom:14px">
       <label>Scope</label>
-      <div class="toggle-group">
-        <button class="toggle-btn ${hasFilters?"":"active"}" data-scope="all">All channels (${channels.length})</button>
-        <button class="toggle-btn ${hasFilters?"active":""}" data-scope="filtered" ${!hasFilters?"disabled":""}>Current filter (${filtered.length})</button>
+      <div class="toggle-group" id="renumber-scope-group">
+        <button class="toggle-btn active" data-scope="all">All active (${activeChannels.length})</button>
+        <button class="toggle-btn" data-scope="filtered" ${!hasFilters?"disabled":""}>Current filter (${filteredActive.length})</button>
+        <button class="toggle-btn" data-scope="by_tag">By tag</button>
       </div>
-      ${hasFilters?`<span class="field-hint" style="margin-top:6px">Current filter will number only the ${filtered.length} channels visible in the table</span>`:""}
     </div>
+
+    <div id="renumber-tag-picker" class="setting-field" style="display:none;margin-bottom:14px">
+      <label>Primary tags to renumber</label>
+      <div id="renumber-tag-chips" class="chip-row"></div>
+    </div>
+
+    <div class="setting-field" style="margin-bottom:14px">
+      <label>Range utilization</label>
+      <div id="renumber-preview" class="range-preview-box"></div>
+    </div>
+
     <div class="modal-actions">
       <button class="btn" id="renumber-cancel">Cancel</button>
-      <button class="btn btn-primary" id="renumber-apply">Number ${scopeLabel}</button>
+      <button class="btn btn-primary" id="renumber-apply">Renumber</button>
     </div>
   </div>`;
 
   document.body.appendChild(modal);
 
-  let scope = hasFilters ? "filtered" : "all";
+  let scope = "all";
+  let selectedTags = new Set();
+
+  // Tag chips: every tag that has a configured range OR appears as primary on any active channel.
+  const rangeTags = Object.keys(ranges);
+  const activePrimaries = [...new Set(activeChannels.map(c=>c.primary_tag).filter(Boolean))];
+  const chipTags = [...new Set([...rangeTags, ...activePrimaries])].sort((a,b)=>{
+    const ai = rangeTags.indexOf(a), bi = rangeTags.indexOf(b);
+    if(ai !== -1 && bi !== -1) return ai - bi;
+    if(ai !== -1) return -1;
+    if(bi !== -1) return 1;
+    return a.localeCompare(b);
+  });
+  const chipRow = modal.querySelector("#renumber-tag-chips");
+  chipRow.innerHTML = chipTags.map(t=>`<button class="chip" data-chip="${t}">${t}</button>`).join("");
+
+  function inScopeChannels(){
+    if(scope === "filtered") return filteredActive;
+    if(scope === "by_tag") return activeChannels.filter(c=> selectedTags.has(c.primary_tag));
+    return activeChannels;
+  }
+
+  function renderPreview(){
+    const inScope = inScopeChannels();
+    const counts = {};
+    inScope.forEach(c=>{
+      if(c.primary_tag) counts[c.primary_tag] = (counts[c.primary_tag]||0) + 1;
+    });
+
+    const tagsToShow = scope === "by_tag"
+      ? [...selectedTags]
+      : [...new Set([...rangeTags, ...Object.keys(counts)])];
+
+    let anyOver = false;
+    const rows = tagsToShow.map(t=>{
+      const r = ranges[t];
+      const used = counts[t] || 0;
+      if(!r){
+        return `<div class="range-row range-row-warn"><span class="range-name">${t}</span><span class="range-detail">no range configured — ${used} channel${used===1?"":"s"} will stay unnumbered</span></div>`;
+      }
+      const slots = (r.end - r.start + 1);
+      const pct = slots > 0 ? Math.round(used / slots * 100) : 0;
+      const over = used > slots;
+      if(over) anyOver = true;
+      const detail = over
+        ? `${used} / ${slots} slots — OVER by ${used - slots}`
+        : `${used} / ${slots} slots (${pct}%)`;
+      return `<div class="range-row ${over?"range-row-over":""}">
+        <span class="range-name">${t}</span>
+        <span class="range-span">${r.start}–${r.end}</span>
+        <span class="range-detail">${detail}</span>
+      </div>`;
+    });
+
+    const container = modal.querySelector("#renumber-preview");
+    if(!rows.length){
+      container.innerHTML = '<div class="range-row range-row-empty">Nothing in scope</div>';
+    } else {
+      container.innerHTML = rows.join("");
+    }
+
+    const applyBtn = modal.querySelector("#renumber-apply");
+    const scopeCount = inScope.length;
+    const disable = scopeCount === 0 || anyOver;
+    applyBtn.disabled = disable;
+    applyBtn.textContent = anyOver ? "Fix range conflicts first" :
+                           scopeCount === 0 ? "Nothing to renumber" :
+                           `Renumber ${scopeCount} channel${scopeCount===1?"":"s"}`;
+  }
 
   modal.querySelectorAll("[data-scope]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
@@ -392,8 +501,22 @@ $("#btn-auto-number").addEventListener("click", ()=>{
       modal.querySelectorAll("[data-scope]").forEach(b=>b.classList.remove("active"));
       btn.classList.add("active");
       scope = btn.dataset.scope;
-      const count = scope === "filtered" ? filtered.length : channels.length;
-      modal.querySelector("#renumber-apply").textContent = `Number ${count} channels`;
+      modal.querySelector("#renumber-tag-picker").style.display = (scope === "by_tag") ? "" : "none";
+      renderPreview();
+    });
+  });
+
+  chipRow.querySelectorAll("[data-chip]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const t = btn.dataset.chip;
+      if(selectedTags.has(t)){
+        selectedTags.delete(t);
+        btn.classList.remove("active");
+      } else {
+        selectedTags.add(t);
+        btn.classList.add("active");
+      }
+      renderPreview();
     });
   });
 
@@ -401,19 +524,19 @@ $("#btn-auto-number").addEventListener("click", ()=>{
   modal.addEventListener("click", e=>{ if(e.target === modal) modal.remove(); });
 
   modal.querySelector("#renumber-apply").addEventListener("click", async ()=>{
-    const start = parseInt(modal.querySelector("#renumber-start").value) || 1;
-    const payload = {start};
-    if(scope === "filtered"){
-      payload.ids = filtered.map(ch=>ch.id);
-    }
+    const payload = {};
+    if(scope === "filtered") payload.ids = filteredActive.map(ch=>ch.id);
+    if(scope === "by_tag") payload.tags = [...selectedTags];
     const applyBtn = modal.querySelector("#renumber-apply");
     applyBtn.disabled = true;
     applyBtn.textContent = "Numbering...";
     const result = await apiPost("/channels/renumber", payload);
-    toast(`Numbered ${result.updated} channels starting at ${start}`, "success");
+    toast(`Renumbered ${result.assigned} / ${result.scope} channels`, "success");
     modal.remove();
     loadChannels();
   });
+
+  renderPreview();
 });
 
 // View toggle
@@ -431,6 +554,20 @@ $("#btn-view-tiles").addEventListener("click", ()=>{
 });
 
 // ── Edit Modal ───────────────────────────────────────────────────────────
+const _MODE_HINTS = {
+  auto: "Tag rules decide active state on each ingest.",
+  force_on: "Stays active regardless of rules.",
+  force_off: "Stays inactive regardless of rules.",
+};
+
+function _setEditMode(mode){
+  const m = ["auto","force_on","force_off"].includes(mode) ? mode : "auto";
+  $$("#edit-mode-group .toggle-btn").forEach(b=>{
+    b.classList.toggle("active", b.dataset.mode === m);
+  });
+  $("#edit-mode-hint").textContent = _MODE_HINTS[m];
+}
+
 function openEditModal(id){
   const ch = channels.find(c=>c.id===id);
   if(!ch) return;
@@ -439,7 +576,8 @@ function openEditModal(id){
   $("#edit-title").value = ch.title||"";
   $("#edit-title-override").value = ch.title_override || "";
   $("#edit-tags").value = (ch.tags||[]).join(", ");
-  $("#edit-active").checked = ch.active;
+  $("#edit-primary-tag").innerHTML = _primaryTagPill(ch.primary_tag);
+  _setEditMode(ch.activation_mode);
   $("#edit-modal-title").textContent = "Edit: " + (ch.title||"Untitled");
 
   // Logo preview
@@ -501,15 +639,21 @@ $("#edit-modal").addEventListener("click", e=>{
   if(e.target.classList.contains("modal-overlay")) closeEditModal();
 });
 
+$$("#edit-mode-group .toggle-btn").forEach(b=>{
+  b.addEventListener("click", ()=> _setEditMode(b.dataset.mode));
+});
+
 $("#edit-save").addEventListener("click", async ()=>{
   if(!editingId) return;
   const tags = $("#edit-tags").value.split(",").map(s=>s.trim()).filter(Boolean);
+  const selectedMode = $("#edit-mode-group .toggle-btn.active");
+  const mode = selectedMode ? selectedMode.dataset.mode : "auto";
   await apiPut(`/channels/${editingId}`, {
     title: $("#edit-title").value,
     title_override: $("#edit-title-override").value || null,
     channel_number: $("#edit-chno").value ? parseInt($("#edit-chno").value) : null,
     tags: tags,
-    active: $("#edit-active").checked,
+    activation_mode: mode,
   });
   toast("Channel updated", "success");
   closeEditModal();
@@ -595,6 +739,7 @@ function renderM3uSources(){
         toast("Ingest failed: " + res.error, "error");
       } else {
         toast(`Ingested ${res.channels} channels`, "success");
+        showIngestWarnings(res.warnings);
         loadM3uSources();
       }
     });
@@ -758,6 +903,7 @@ $("#btn-ingest-all").addEventListener("click", async ()=>{
     toast("Ingest failed: " + res.error, "error");
   } else {
     toast(`Ingested ${res.channels} channels from ${res.ingested} sources`, "success");
+    showIngestWarnings(res.warnings);
     loadM3uSources();
     loadChannels();
   }
@@ -1212,6 +1358,13 @@ function renderSettings(){
   clearInterval(tasksTimer); tasksTimer = null;
   clearInterval(enrichStatusTimer); enrichStatusTimer = null;
 
+  // Tagging + Integrations subtabs use their own in-card Save buttons.
+  const globalSave = $("#save-settings");
+  if(globalSave){
+    const hideGlobal = ["tagging", "integrations"].includes(currentSettingsSub);
+    globalSave.style.display = hideGlobal ? "none" : "";
+  }
+
   if(currentSettingsSub === "general"){
     title.textContent = "General";
     container.innerHTML = `<div class="settings-fields">
@@ -1300,6 +1453,447 @@ function renderSettings(){
     title.textContent = "Integrations";
     container.innerHTML = '<div id="integrations-container" style="padding:16px 0"><div class="empty-state">Loading...</div></div>';
     loadIntegrations();
+  } else if(currentSettingsSub === "tagging"){
+    title.textContent = "Tagging";
+    container.innerHTML = '<div id="tagging-container" style="padding:16px 0"><div class="empty-state">Loading...</div></div>';
+    loadTaggingSettings();
+  }
+}
+
+// ── Ingest warnings banner ──────────────────────────────────────────────
+
+function _fmtIngestWarning(w){
+  if(w.type === "range_exhausted"){
+    const [start, end] = w.range || [0, 0];
+    return `<strong>${w.tag}</strong> range exhausted (${start}–${end}): ${w.unassigned} channel${w.unassigned===1?"":"s"} unassigned`;
+  }
+  return JSON.stringify(w);
+}
+
+function showIngestWarnings(warnings){
+  const banner = $("#ingest-warning-banner");
+  if(!banner) return;
+  if(!warnings || !warnings.length){
+    banner.classList.add("hidden");
+    banner.innerHTML = "";
+    return;
+  }
+  const lines = warnings.map(w => `<li>${_fmtIngestWarning(w)}</li>`).join("");
+  banner.innerHTML = `
+    <div class="ingest-warning-body">
+      <strong>Ingest warnings</strong>
+      <ul>${lines}</ul>
+      <div class="ingest-warning-actions">
+        <button class="btn btn-sm btn-primary" id="ingest-warning-fix">Fix ranges</button>
+        <button class="btn btn-sm btn-ghost" id="ingest-warning-dismiss">Dismiss</button>
+      </div>
+    </div>`;
+  banner.classList.remove("hidden");
+  $("#ingest-warning-fix").addEventListener("click", ()=>{
+    // Jump to Settings → Tagging
+    const settingsBtn = document.querySelector('[data-view="settings"]');
+    if(settingsBtn) settingsBtn.click();
+    const taggingBtn = document.querySelector('[data-sub="tagging"]');
+    if(taggingBtn) taggingBtn.click();
+  });
+  $("#ingest-warning-dismiss").addEventListener("click", ()=> showIngestWarnings(null));
+}
+
+// ── Tagging ─────────────────────────────────────────────────────────────
+
+let _tagRulesData = null;
+let _numberRangesData = null;
+let _activationRulesData = null;
+
+async function loadTaggingSettings(){
+  try {
+    const [rules, ranges, activation] = await Promise.all([
+      api("/tag-rules"),
+      api("/number-ranges"),
+      api("/activation-rules"),
+    ]);
+    _tagRulesData = rules;
+    _numberRangesData = ranges;
+    _activationRulesData = activation;
+    renderTaggingSettings();
+  } catch(e){
+    const c = $("#tagging-container");
+    if(c) c.innerHTML = '<div class="empty-state">Failed to load tagging settings</div>';
+  }
+}
+
+function renderTaggingSettings(){
+  const c = $("#tagging-container");
+  if(!c) return;
+  c.innerHTML = `<div class="tagging-grid">
+    <div class="tagging-card" id="tag-rules-card">
+      <div class="tagging-card-header">
+        <h3>Tag Rules</h3>
+        <div class="tagging-card-actions">
+          <button class="btn btn-sm btn-ghost" id="tag-rules-reset">Reset to Defaults</button>
+          <button class="btn btn-sm btn-primary" id="tag-rules-save">Save</button>
+        </div>
+      </div>
+      <p class="field-hint">Title keywords match against the channel title; domain keywords match against the stream URL host. Priority decides the <code>primary_tag</code> when a channel matches multiple categories.</p>
+      <div class="setting-field">
+        <label>Priority (highest first)</label>
+        <input type="text" id="tag-rules-priority" placeholder="event, sports, news, movies, kids, live">
+        <span class="field-hint">Comma-separated list of tag names, ordered highest→lowest priority.</span>
+      </div>
+      <div class="tag-rules-list" id="tag-rules-list"></div>
+      <button class="btn btn-sm btn-ghost" id="tag-rules-add">+ Add Tag</button>
+    </div>
+
+    <div class="tagging-card" id="number-ranges-card">
+      <div class="tagging-card-header">
+        <h3>Number Ranges</h3>
+        <div class="tagging-card-actions">
+          <button class="btn btn-sm btn-ghost" id="number-ranges-reset">Reset to Defaults</button>
+          <button class="btn btn-sm btn-primary" id="number-ranges-save">Save</button>
+        </div>
+      </div>
+      <p class="field-hint">Each primary tag maps to a number range. Channels are auto-numbered within their range on ingest (and on renumber). Utilization shows active channels in each range — if it's near or over 100%, widen the range.</p>
+      <div class="range-edit-list" id="number-ranges-list"></div>
+      <div class="range-edit-add-row">
+        <select id="number-ranges-add-tag"></select>
+        <button class="btn btn-sm btn-ghost" id="number-ranges-add">+ Add Range</button>
+      </div>
+      <div id="number-ranges-warnings" class="range-edit-warnings"></div>
+    </div>
+
+    <div class="tagging-card" id="activation-rules-card">
+      <div class="tagging-card-header">
+        <h3>Activation Rules</h3>
+        <div class="tagging-card-actions">
+          <button class="btn btn-sm btn-ghost" id="activation-rules-reset">Reset to Defaults</button>
+          <button class="btn btn-sm btn-primary" id="activation-rules-save">Save</button>
+        </div>
+      </div>
+      <p class="field-hint">Channels with <strong>any</strong> matching tag activate on ingest (unless manually set to Always On/Off). Matches against the full tag list, so you can activate by network/sub-sport, not just primary category.</p>
+      <div class="setting-field">
+        <label>Tags that activate channels</label>
+        <div id="activation-chips" class="chip-row"></div>
+      </div>
+      <div class="setting-field">
+        <label>Add tag not in the list</label>
+        <div class="activation-custom-add">
+          <input type="text" id="activation-custom-input" placeholder="e.g. espn, ncaaf">
+          <button class="btn btn-sm btn-ghost" id="activation-custom-add">Add</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  _renderTagRulesEditor();
+  _renderNumberRangesEditor();
+  _renderActivationRulesEditor();
+
+  $("#tag-rules-add").addEventListener("click", ()=>{
+    const name = (prompt("New tag name (lowercase, no spaces):") || "").trim().toLowerCase();
+    if(!name) return;
+    if(_tagRulesData[name]){
+      toast("Tag already exists", "error");
+      return;
+    }
+    _tagRulesData[name] = {keywords: [], domain_keywords: []};
+    _renderTagRulesEditor();
+  });
+
+  $("#tag-rules-save").addEventListener("click", _saveTagRules);
+
+  $("#tag-rules-reset").addEventListener("click", async ()=>{
+    if(!confirm("Reset tag rules to defaults? All custom changes will be lost.")) return;
+    _tagRulesData = await apiPost("/tag-rules/reset-defaults", {});
+    _renderTagRulesEditor();
+    toast("Tag rules reset to defaults", "success");
+  });
+
+  $("#number-ranges-add").addEventListener("click", ()=>{
+    const sel = $("#number-ranges-add-tag");
+    const name = sel.value;
+    if(!name) return;
+    // Default new ranges to an unused slot after the current max end.
+    const maxEnd = Math.max(0, ...Object.values(_numberRangesData || {})
+      .map(r => Number(r.end) || 0));
+    const start = Math.max(100, Math.ceil((maxEnd + 100) / 100) * 100);
+    _numberRangesData[name] = {start, end: start + 99};
+    _renderNumberRangesEditor();
+  });
+
+  $("#number-ranges-save").addEventListener("click", _saveNumberRanges);
+
+  $("#number-ranges-reset").addEventListener("click", async ()=>{
+    if(!confirm("Reset number ranges to defaults?")) return;
+    _numberRangesData = await apiPost("/number-ranges/reset-defaults", {});
+    _renderNumberRangesEditor();
+    toast("Number ranges reset to defaults", "success");
+  });
+
+  $("#activation-rules-save").addEventListener("click", _saveActivationRules);
+  $("#activation-rules-reset").addEventListener("click", async ()=>{
+    if(!confirm("Reset activation rules to defaults?")) return;
+    _activationRulesData = await apiPost("/activation-rules/reset-defaults", {});
+    _renderActivationRulesEditor();
+    toast("Activation rules reset to defaults", "success");
+  });
+  $("#activation-custom-add").addEventListener("click", ()=>{
+    const inp = $("#activation-custom-input");
+    const name = (inp.value || "").trim().toLowerCase();
+    if(!name) return;
+    const current = _activationRulesData.tags_auto_on || [];
+    if(!current.includes(name)){
+      _activationRulesData.tags_auto_on = [...current, name];
+    }
+    inp.value = "";
+    _renderActivationRulesEditor();
+  });
+  $("#activation-custom-input").addEventListener("keydown", (e)=>{
+    if(e.key === "Enter"){ e.preventDefault(); $("#activation-custom-add").click(); }
+  });
+}
+
+function _renderActivationRulesEditor(){
+  const chipRow = $("#activation-chips");
+  if(!chipRow) return;
+  const selected = new Set(_activationRulesData.tags_auto_on || []);
+
+  // Build the chip pool: priority tags first, then all distinct tags seen
+  // across channels, then any custom tags the user already selected.
+  const priority = (_tagRulesData && _tagRulesData.priority) || [];
+  const fromChannels = new Set();
+  (channels || []).forEach(c => (c.tags || []).forEach(t => fromChannels.add(t)));
+  const merged = [];
+  const seen = new Set();
+  const push = (t) => { if(!seen.has(t)){ seen.add(t); merged.push(t); } };
+  priority.forEach(push);
+  [...fromChannels].sort().forEach(push);
+  [...selected].sort().forEach(push);
+
+  chipRow.innerHTML = merged.map(t => {
+    const active = selected.has(t) ? "active" : "";
+    return `<button class="chip ${active}" data-act-chip="${t}">${t}</button>`;
+  }).join("");
+
+  $$("[data-act-chip]", chipRow).forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const t = btn.dataset.actChip;
+      const current = new Set(_activationRulesData.tags_auto_on || []);
+      if(current.has(t)) current.delete(t); else current.add(t);
+      _activationRulesData.tags_auto_on = [...current];
+      _renderActivationRulesEditor();
+    });
+  });
+}
+
+async function _saveActivationRules(){
+  const tags_auto_on = [...new Set(_activationRulesData.tags_auto_on || [])];
+  try {
+    await apiPut("/activation-rules", {tags_auto_on});
+    _activationRulesData = await api("/activation-rules");
+    _renderActivationRulesEditor();
+    toast("Activation rules saved. Re-ingest to apply.", "success");
+  } catch(e){
+    toast("Failed to save activation rules", "error");
+  }
+}
+
+async function _saveNumberRanges(){
+  const payload = {};
+  for(const [name, r] of Object.entries(_numberRangesData || {})){
+    const start = parseInt(r.start);
+    const end = parseInt(r.end);
+    if(isNaN(start) || isNaN(end) || start <= 0 || end < start){
+      toast(`Range "${name}" is invalid — fix start/end first`, "error");
+      return;
+    }
+    payload[name] = {start, end};
+  }
+  try {
+    await apiPut("/number-ranges", payload);
+    _numberRangesData = await api("/number-ranges");
+    _renderNumberRangesEditor();
+    toast("Number ranges saved. Re-ingest or click Auto-Number to apply.", "success");
+  } catch(e){
+    toast("Failed to save number ranges", "error");
+  }
+}
+
+function _renderTagRulesEditor(){
+  const priorityInput = $("#tag-rules-priority");
+  priorityInput.value = (_tagRulesData.priority || []).join(", ");
+
+  const listEl = $("#tag-rules-list");
+  const tagNames = Object.keys(_tagRulesData).filter(k => k !== "priority").sort();
+
+  if(!tagNames.length){
+    listEl.innerHTML = '<div class="empty-state" style="padding:16px">No tags defined. Click "Add Tag" to create one.</div>';
+    return;
+  }
+
+  listEl.innerHTML = tagNames.map(name => {
+    const spec = _tagRulesData[name] || {};
+    const keywords = (spec.keywords || []).join("\n");
+    const domains = (spec.domain_keywords || []).join("\n");
+    return `<div class="tag-rule-card" data-tag-card="${name}">
+      <div class="tag-rule-head">
+        <strong class="tag-rule-name">${name}</strong>
+        <button class="btn-sm btn-ghost" data-tag-delete="${name}">Remove</button>
+      </div>
+      <div class="tag-rule-grid">
+        <div class="setting-field">
+          <label>Title keywords (one per line)</label>
+          <textarea rows="4" data-tag-keywords="${name}">${keywords}</textarea>
+        </div>
+        <div class="setting-field">
+          <label>Domain keywords</label>
+          <textarea rows="4" data-tag-domains="${name}">${domains}</textarea>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+
+  $$("[data-tag-delete]", listEl).forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const name = btn.dataset.tagDelete;
+      if(!confirm(`Remove tag "${name}"? Channels will stop matching this category on next ingest.`)) return;
+      delete _tagRulesData[name];
+      _renderTagRulesEditor();
+    });
+  });
+}
+
+function _renderNumberRangesEditor(){
+  const listEl = $("#number-ranges-list");
+  const ranges = _numberRangesData || {};
+  const tagNames = Object.keys(ranges);
+
+  // Active-channel counts per primary_tag for utilization display.
+  const activeCounts = {};
+  (channels || []).forEach(c=>{
+    if(c.active && c.primary_tag){
+      activeCounts[c.primary_tag] = (activeCounts[c.primary_tag] || 0) + 1;
+    }
+  });
+
+  if(!tagNames.length){
+    listEl.innerHTML = '<div class="empty-state" style="padding:16px">No ranges configured. Pick a tag below and click "Add Range".</div>';
+  } else {
+    listEl.innerHTML = tagNames.map(name => {
+      const r = ranges[name] || {};
+      const start = r.start ?? "";
+      const end = r.end ?? "";
+      const slots = (Number(end) - Number(start) + 1) || 0;
+      const used = activeCounts[name] || 0;
+      const pct = slots > 0 ? Math.round(used / slots * 100) : 0;
+      const over = used > slots && slots > 0;
+      return `<div class="range-edit-row ${over?"range-edit-row-over":""}" data-range-tag="${name}">
+        <span class="range-edit-name">${name}</span>
+        <input type="number" class="range-edit-num" data-range-start="${name}" value="${start}" min="1">
+        <span class="range-edit-sep">–</span>
+        <input type="number" class="range-edit-num" data-range-end="${name}" value="${end}" min="1">
+        <span class="range-edit-stats">
+          <span class="range-edit-slots">${slots > 0 ? slots : "—"} slots</span>
+          <span class="range-edit-util ${over?"range-edit-util-over":""}">${used} active ${slots > 0 ? `(${pct}%)` : ""}</span>
+        </span>
+        <button class="btn-sm btn-ghost" data-range-delete="${name}" title="Remove">×</button>
+      </div>`;
+    }).join("");
+  }
+
+  // Populate "Add Range" dropdown with eligible tags (in priority but not yet ranged)
+  const priority = (_tagRulesData && _tagRulesData.priority) || [];
+  const allKnown = new Set([
+    ...priority,
+    ...Object.keys(_tagRulesData || {}).filter(k => k !== "priority"),
+  ]);
+  const available = [...allKnown].filter(t => !tagNames.includes(t));
+  const addSel = $("#number-ranges-add-tag");
+  addSel.innerHTML = available.length
+    ? available.map(t => `<option value="${t}">${t}</option>`).join("")
+    : '<option value="">(no tags left to add)</option>';
+  $("#number-ranges-add").disabled = !available.length;
+
+  _updateRangeOverlapWarnings();
+
+  $$("[data-range-delete]", listEl).forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const name = btn.dataset.rangeDelete;
+      if(!confirm(`Remove range for "${name}"? Channels with this primary tag will stop being auto-numbered until you add it back.`)) return;
+      delete _numberRangesData[name];
+      _renderNumberRangesEditor();
+    });
+  });
+
+  $$(".range-edit-num", listEl).forEach(inp=>{
+    inp.addEventListener("change", ()=>{
+      const name = inp.dataset.rangeStart || inp.dataset.rangeEnd;
+      const side = inp.dataset.rangeStart ? "start" : "end";
+      const val = parseInt(inp.value);
+      if(!_numberRangesData[name]) _numberRangesData[name] = {start: 0, end: 0};
+      _numberRangesData[name][side] = isNaN(val) ? 0 : val;
+      // Re-render to refresh slot count + utilization + overlap
+      _renderNumberRangesEditor();
+    });
+  });
+}
+
+function _updateRangeOverlapWarnings(){
+  const warnEl = $("#number-ranges-warnings");
+  if(!warnEl) return;
+  const ranges = _numberRangesData || {};
+  const entries = Object.entries(ranges)
+    .filter(([, r]) => r && Number(r.start) > 0 && Number(r.end) >= Number(r.start));
+
+  const overlaps = [];
+  for(let i = 0; i < entries.length; i++){
+    for(let j = i + 1; j < entries.length; j++){
+      const [a, ar] = entries[i];
+      const [b, br] = entries[j];
+      if(Number(ar.start) <= Number(br.end) && Number(br.start) <= Number(ar.end)){
+        overlaps.push(`${a} (${ar.start}–${ar.end}) overlaps ${b} (${br.start}–${br.end})`);
+      }
+    }
+  }
+  const invalid = Object.entries(ranges)
+    .filter(([, r]) => !r || !(Number(r.end) >= Number(r.start) && Number(r.start) > 0))
+    .map(([name]) => name);
+
+  const msgs = [];
+  if(invalid.length) msgs.push(`Invalid ranges: ${invalid.join(", ")} (start must be > 0 and end must be ≥ start)`);
+  overlaps.forEach(m => msgs.push(m));
+  warnEl.innerHTML = msgs.length
+    ? msgs.map(m => `<div class="range-edit-warning">⚠ ${m}</div>`).join("")
+    : "";
+}
+
+async function _saveTagRules(){
+  // Collect state from DOM
+  const priorityRaw = $("#tag-rules-priority").value || "";
+  const priority = priorityRaw.split(",").map(s=>s.trim()).filter(Boolean);
+
+  const payload = {priority};
+  $$("[data-tag-card]").forEach(card=>{
+    const name = card.dataset.tagCard;
+    const kwEl = $(`[data-tag-keywords="${name}"]`, card);
+    const domEl = $(`[data-tag-domains="${name}"]`, card);
+    const keywords = (kwEl.value || "").split("\n").map(s=>s.trim().toLowerCase()).filter(Boolean);
+    const domain_keywords = (domEl.value || "").split("\n").map(s=>s.trim().toLowerCase()).filter(Boolean);
+    payload[name] = {keywords, domain_keywords};
+  });
+
+  // Warn on priority tags that aren't defined
+  const undefinedPriority = priority.filter(p => !payload[p]);
+  if(undefinedPriority.length){
+    if(!confirm(`Priority references undefined tags: ${undefinedPriority.join(", ")}. Save anyway?`)) return;
+  }
+
+  try {
+    await apiPut("/tag-rules", payload);
+    _tagRulesData = await api("/tag-rules");
+    _renderTagRulesEditor();
+    toast("Tag rules saved. Re-ingest to apply.", "success");
+  } catch(e){
+    toast("Failed to save tag rules", "error");
   }
 }
 

@@ -12,6 +12,13 @@ import requests
 from manifold.database import get_session
 from manifold.models.manifest import Manifest, Capture, HeaderProfile
 from manifold.models.m3u_source import M3uSource
+from manifold.services.tag_rules import (
+    apply_keyword_rules,
+    compute_primary_tag,
+    get_tag_rules,
+)
+from manifold.services.autonumber import AutoNumberer, get_number_ranges
+from manifold.services.activation import get_activation_rules, should_be_active
 
 logger = logging.getLogger(__name__)
 
@@ -50,26 +57,23 @@ def _extract_clean_title(extinf_line: str, fallback: str = "Unknown") -> str:
     return clean or fallback
 
 
-def _compute_tags(extinf_line: str, title: str, channel_url: str) -> list[str]:
-    tags = set()
+def _compute_tags(
+    extinf_line: str,
+    title: str,
+    channel_url: str,
+    rules: dict,
+) -> tuple[list[str], str | None]:
+    """Return (sorted tags, primary_tag) for a channel.
+
+    Keyword matching is driven by `rules` (see manifold.services.tag_rules).
+    Event detection, VOD transformation, and group-title passthrough stay in
+    code because they're structural rather than keyword-based.
+    """
     title_lower = title.lower()
+    domain_lower = urlparse(channel_url).netloc.lower()
 
-    tags.add('live')
-
-    if any(k in title_lower for k in ['espn', 'sec network', 'nba', 'nfl', 'mlb', 'nhl', 'fanduel', 'sportsnet']):
-        tags.add('sports')
-    if any(k in title_lower for k in ['cnn', 'msnbc', 'fox news', 'bbc', 'newsmax', 'c-span']):
-        tags.add('news')
-    if any(k in title_lower for k in ['hbo', 'showtime', 'cinemax', 'tmc', 'movie']):
-        tags.add('movies')
-    if any(k in title_lower for k in ['disney', 'nick', 'cartoon', 'boomerang', 'universal kids']):
-        tags.add('kids')
-
-    domain = urlparse(channel_url).netloc.lower()
-    if 'espn' in domain:
-        tags.add('sports')
-    if 'cnn' in domain:
-        tags.add('news')
+    tags: set[str] = {'live'}
+    tags.update(apply_keyword_rules(rules, title_lower, domain_lower))
 
     if extinf_line:
         group_match = re.search(r'group-title=["\']([^"\']*)["\']', extinf_line, re.I)
@@ -102,7 +106,11 @@ def _compute_tags(extinf_line: str, title: str, channel_url: str) -> list[str]:
 
     if not tags:
         tags.add('uncategorized')
-    return sorted(list(tags))
+
+    tag_list = sorted(tags)
+    priority = rules.get('priority', []) or []
+    primary = compute_primary_tag(tag_list, priority)
+    return tag_list, primary
 
 
 class M3uIngestService:
@@ -157,26 +165,41 @@ class M3uIngestService:
             source_list = [(s.id, s.name, s.url) for s in sources]
 
         if not source_list:
-            return {"ok": True, "ingested": 0, "channels": 0}
+            return {"ok": True, "ingested": 0, "channels": 0, "warnings": []}
 
         total_channels = 0
+        # Collapse per-tag warnings across sources so the UI gets one entry per
+        # tag with a total unassigned count.
+        merged: dict[str, dict] = {}
         for source_id, source_name, source_url in source_list:
             result = M3uIngestService.ingest_source(source_id)
             total_channels += result.get("channels", 0)
+            for w in (result.get("warnings") or []):
+                key = (w.get("type"), w.get("tag"))
+                if key in merged:
+                    merged[key]["unassigned"] += w.get("unassigned", 0)
+                else:
+                    merged[key] = dict(w)
 
-        return {"ok": True, "ingested": len(source_list), "channels": total_channels}
+        return {
+            "ok": True,
+            "ingested": len(source_list),
+            "channels": total_channels,
+            "warnings": list(merged.values()),
+        }
 
     @staticmethod
     def _cleanup_disappeared(source_id: str, seen_ids: set) -> tuple[int, int]:
         """Handle manifests that were in this source but aren't anymore.
 
+        - activation_mode in (force_on, force_off): never auto-deleted (user intent preserved)
         - Events: deleted immediately (ephemeral)
-        - Live channels first time missing: marked stale + deactivated
-        - Live channels stale >12h: deleted
+        - Auto + inactive: deleted immediately (never exposed, no grace needed)
+        - Auto + active, first miss: marked stale + deactivated
+        - Auto + active, stale >12h: deleted
 
-        Returns (stale_count, deleted_count). Safe to call with empty seen_ids
-        — skips cleanup in that case so a transient fetch failure can't wipe
-        an entire source.
+        Returns (stale_count, deleted_count). Safe to call with empty seen_ids —
+        skips cleanup so a transient fetch failure can't wipe an entire source.
         """
         STALE_GRACE_HOURS = 12
         if not seen_ids:
@@ -195,12 +218,24 @@ class M3uIngestService:
                 if m.id in seen_ids:
                     continue
 
+                mode = m.activation_mode or "auto"
+                if mode in ("force_on", "force_off"):
+                    continue
+
                 is_event = "event" in (m.tags or [])
                 if is_event:
                     logger.info("Deleting disappeared event: %s", m.title)
                     session.delete(m)
                     deleted += 1
-                elif m.stale_since is None:
+                    continue
+
+                if not m.active:
+                    logger.info("Deleting disappeared inactive channel: %s", m.title)
+                    session.delete(m)
+                    deleted += 1
+                    continue
+
+                if m.stale_since is None:
                     m.stale_since = now
                     m.active = False
                     logger.info("Channel went stale (deactivated): %s", m.title)
@@ -328,6 +363,13 @@ class M3uIngestService:
                     source.last_ingested_at = datetime.utcnow()
             return {"ok": True, "channels": 0}
 
+        # Fetch tag rules + number ranges + activation rules once — passed into
+        # the loop to avoid N+1 DB hits.
+        tag_rules = get_tag_rules()
+        number_ranges = get_number_ranges()
+        activation_rules = get_activation_rules()
+        tags_auto_on = set(activation_rules.get("tags_auto_on") or [])
+
         # Bulk upsert all entries in a single session
         channel_count = 0
         seen_ids = set()
@@ -336,11 +378,15 @@ class M3uIngestService:
             all_manifests = session.query(Manifest).all()
             title_map = {}
             url_hash_map = {}
+            taken_numbers: set[int] = set()
             for m in all_manifests:
                 if m.title:
                     title_map[m.title] = m
                 if m.url_hash:
                     url_hash_map[m.url_hash] = m
+                if m.channel_number is not None:
+                    taken_numbers.add(m.channel_number)
+            numberer = AutoNumberer(number_ranges, taken_numbers)
 
             # Load header profile cache
             profile_rows = session.query(HeaderProfile.name, HeaderProfile.id).all()
@@ -349,7 +395,9 @@ class M3uIngestService:
             for channel_title, channel_url, extinf_line, tvg_id, tvg_logo in entries:
                 url_hash = _md5(channel_url)
                 source_domain = urlparse(channel_url).netloc
-                computed_tags = _compute_tags(extinf_line, channel_title, channel_url)
+                computed_tags, primary_tag = _compute_tags(
+                    extinf_line, channel_title, channel_url, tag_rules
+                )
                 header_profile_id = domain_profile_cache.get(source_domain)
 
                 # Find existing manifest by title or URL hash
@@ -370,20 +418,19 @@ class M3uIngestService:
                             del title_map[old_title]
                         title_map[channel_title] = manifest
                     manifest.tags = computed_tags
+                    manifest.primary_tag = primary_tag
+                    manifest.channel_number = numberer.assign(manifest.channel_number, primary_tag)
                     manifest.tvg_id = tvg_id
                     manifest.tvg_logo = tvg_logo
                     manifest.m3u_source_id = source_id
                     manifest.header_profile_id = header_profile_id
                     manifest.mime = "application/vnd.apple.mpegurl"
                     manifest.kind = "master"
-                    # Auto-activate: bring channel back live if the source has
-                    # the toggle on. We apply this to existing channels too,
-                    # not just new ones — otherwise flipping the toggle on
-                    # only affects never-seen channels, which means pre-existing
-                    # inactive rows stay inactive forever. If auto_activate is
-                    # off, leave active alone so manual changes stick.
-                    if auto_activate:
-                        manifest.active = True
+                    # Additive activation: auto-mode channels follow tag rules;
+                    # force_on/force_off rows preserve user intent across ingests.
+                    # Match any tag in the channel's full tag list, not just primary.
+                    if manifest.activation_mode == "auto":
+                        manifest.active = any(t in tags_auto_on for t in computed_tags)
                     # Channel is present in source — clear stale status
                     manifest.stale_since = None
                 else:
@@ -407,7 +454,15 @@ class M3uIngestService:
                         tvg_id=tvg_id,
                         tvg_logo=tvg_logo,
                         tags=computed_tags,
-                        active=auto_activate,
+                        primary_tag=primary_tag,
+                        channel_number=numberer.assign(None, primary_tag),
+                        # auto_activate=True on the source now means "insert new
+                        # channels as force_on" (user wants this source always
+                        # on, bypassing tag rules). auto_activate=False new rows
+                        # enter auto mode and additive rules decide active.
+                        activation_mode=("force_on" if auto_activate else "auto"),
+                        active=(True if auto_activate
+                                else any(t in tags_auto_on for t in computed_tags)),
                     )
                     session.add(manifest)
                     title_map[channel_title] = manifest
@@ -443,4 +498,9 @@ class M3uIngestService:
                 logger.error("Post-ingest logo sync failed: %s", e)
         threading.Thread(target=_sync, daemon=True).start()
 
-        return {"ok": True, "channels": channel_count, "seen_ids": seen_ids}
+        return {
+            "ok": True,
+            "channels": channel_count,
+            "seen_ids": seen_ids,
+            "warnings": numberer.warnings(),
+        }

@@ -5,7 +5,7 @@
   <title>Manifold</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-  <link rel="stylesheet" href="/static/style.css?v=51" />
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}" />
 </head>
 <body class="theme-dark">
   <!-- Header -->
@@ -66,6 +66,7 @@
           <button class="nav-subitem" data-sub="epg-settings">EPG</button>
           <button class="nav-subitem" data-sub="stream">Stream</button>
           <button class="nav-subitem" data-sub="integrations">Integrations</button>
+          <button class="nav-subitem" data-sub="tagging">Tagging</button>
         </div>
       </nav>
       <div class="sidebar-info">
@@ -75,6 +76,8 @@
 
     <!-- Main -->
     <main class="content">
+
+      <div id="ingest-warning-banner" class="ingest-warning-banner hidden"></div>
 
       <!-- CHANNELS -->
       <section id="view-channels" class="view visible">
@@ -92,7 +95,16 @@
                 <option value="unmapped">No EPG</option>
               </select>
               <select class="filter-status" id="channel-tag-filter">
-                <option value="">All Tags</option>
+                <option value="">All tags (any)</option>
+              </select>
+              <select class="filter-status" id="channel-primary-tag-filter">
+                <option value="">All primary</option>
+              </select>
+              <select class="filter-status" id="channel-mode-filter">
+                <option value="">All modes</option>
+                <option value="auto">Auto</option>
+                <option value="force_on">Pinned on</option>
+                <option value="force_off">Pinned off</option>
               </select>
             </div>
             <div class="panel-actions">
@@ -117,6 +129,8 @@
                   <th class="th-chno">#</th>
                   <th>Title</th>
                   <th>Tags</th>
+                  <th>Primary</th>
+                  <th>Mode</th>
                   <th>EPG</th>
                   <th>Active</th>
                   <th>Actions</th>
@@ -414,10 +428,18 @@
           <input type="text" id="edit-tags">
         </div>
         <div class="setting-field">
-          <label class="toggle-label">
-            <input type="checkbox" id="edit-active">
-            <span>Active</span>
-          </label>
+          <label>Primary Category</label>
+          <div id="edit-primary-tag" class="readonly-display"></div>
+          <span class="field-hint">Computed from tag rules — drives channel number and additive activation</span>
+        </div>
+        <div class="setting-field">
+          <label>Activation</label>
+          <div class="toggle-group" id="edit-mode-group">
+            <button type="button" class="toggle-btn" data-mode="auto">Auto</button>
+            <button type="button" class="toggle-btn" data-mode="force_on">Always On</button>
+            <button type="button" class="toggle-btn" data-mode="force_off">Always Off</button>
+          </div>
+          <span class="field-hint" id="edit-mode-hint"></span>
         </div>
       </div>
       <div class="modal-footer">
@@ -540,6 +562,6 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-  <script src="/static/app.js?v=50"></script>
+  <script src="/static/app.js?v={{ asset_version }}"></script>
 </body>
 </html>

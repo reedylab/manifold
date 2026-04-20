@@ -205,4 +205,7 @@ def ingest_m3u_source(source_id: str):
     result = M3uIngestService.ingest_source(source_id)
     if "error" in result and result.get("channels") is None:
         return JSONResponse(result, status_code=404)
+    # seen_ids is an internal intermediate used by refresh_all — drop it from the
+    # public response.
+    result.pop("seen_ids", None)
     return result

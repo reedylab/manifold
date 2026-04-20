@@ -52,25 +52,60 @@ def toggle_channel(manifest_id: str, data: dict = Body(default={})):
 
 @router.post("/channels/renumber")
 def renumber_channels(data: dict = Body(default={})):
-    start = int(data.get("start", 1))
-    ids = data.get("ids")
+    """Rebuild channel numbers from the tag-driven rule engine.
+
+    Wipes existing numbers in the chosen scope first, then reassigns from the
+    per-tag ranges defined in settings. Manual numbers in-scope are overwritten.
+    Out-of-scope channels keep their numbers and are treated as taken.
+
+    Optional scope filters (no filter = all active channels):
+      ids:  list of channel IDs to limit the rebuild to
+      tags: list of primary_tag values to limit the rebuild to
+    """
+    from manifold.services.autonumber import AutoNumberer, get_number_ranges
+
+    ids = data.get("ids") or None
+    tags = data.get("tags") or None
+    number_ranges = get_number_ranges()
+
     with get_session() as session:
-        query = (
-            session.query(Manifest)
-            .filter(Manifest.active == True)
-            .filter(
-                Manifest.tags.op("@>")('["live"]')
-                | Manifest.tags.op("@>")('["event"]')
-            )
-        )
+        query = session.query(Manifest).filter(Manifest.active == True)
         if ids:
             query = query.filter(Manifest.id.in_(ids))
-        channels = query.order_by(Manifest.channel_number.asc().nullslast(), Manifest.title).all()
-        count = 0
-        for i, m in enumerate(channels):
-            m.channel_number = start + i
-            count += 1
-    return {"ok": True, "updated": count}
+        if tags:
+            query = query.filter(Manifest.primary_tag.in_(tags))
+        in_scope = query.all()
+        in_scope_ids = {m.id for m in in_scope}
+
+        taken: set[int] = set()
+        for row_id, row_num in session.query(Manifest.id, Manifest.channel_number).filter(
+            Manifest.channel_number.isnot(None)
+        ):
+            if row_id not in in_scope_ids:
+                taken.add(row_num)
+
+        for m in in_scope:
+            m.channel_number = None
+
+        numberer = AutoNumberer(number_ranges, taken)
+        in_scope.sort(key=lambda m: (m.primary_tag or "~", m.title or ""))
+
+        assigned = 0
+        for m in in_scope:
+            new_num = numberer.assign(None, m.primary_tag)
+            if new_num is not None:
+                m.channel_number = new_num
+                assigned += 1
+
+    return {"ok": True, "scope": len(in_scope), "assigned": assigned}
+
+
+@router.post("/channels/{manifest_id}/reset-activation")
+def reset_channel_activation(manifest_id: str):
+    ok = ChannelManagerService.reset_activation(manifest_id)
+    if not ok:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"ok": True, "activation_mode": "auto"}
 
 
 @router.post("/channels/bulk-activate")
@@ -80,7 +115,8 @@ def bulk_activate_channels(data: dict = Body(default={})):
         return JSONResponse({"error": "ids required"}, status_code=400)
     with get_session() as session:
         activated = session.query(Manifest).filter(Manifest.id.in_(ids)).update(
-            {Manifest.active: True}, synchronize_session="fetch"
+            {Manifest.active: True, Manifest.activation_mode: "force_on"},
+            synchronize_session="fetch",
         )
     return {"ok": True, "activated": activated}
 
@@ -92,6 +128,7 @@ def bulk_deactivate_channels(data: dict = Body(default={})):
         return JSONResponse({"error": "ids required"}, status_code=400)
     with get_session() as session:
         deactivated = session.query(Manifest).filter(Manifest.id.in_(ids)).update(
-            {Manifest.active: False}, synchronize_session="fetch"
+            {Manifest.active: False, Manifest.activation_mode: "force_off"},
+            synchronize_session="fetch",
         )
     return {"ok": True, "deactivated": deactivated}

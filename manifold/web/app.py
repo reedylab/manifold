@@ -42,9 +42,20 @@ async def lifespan(app: FastAPI):
                 ("channel_number", "INTEGER"),
                 ("title_override", "VARCHAR"),
                 ("stale_since", "TIMESTAMPTZ"),
+                ("primary_tag", "VARCHAR"),
             ]:
                 if col not in manifest_cols:
                     conn.execute(text(f"ALTER TABLE manifests ADD COLUMN {col} {coltype}"))
+            if "activation_mode" not in manifest_cols:
+                # Add column + one-time backfill: existing active rows become
+                # force_on, inactive become force_off. Preserves user intent
+                # from before additive activation was introduced.
+                conn.execute(text(
+                    "ALTER TABLE manifests ADD COLUMN activation_mode VARCHAR NOT NULL DEFAULT 'auto'"
+                ))
+                conn.execute(text(
+                    "UPDATE manifests SET activation_mode = CASE WHEN active THEN 'force_on' ELSE 'force_off' END"
+                ))
             conn.commit()
 
         if "m3u_sources" in tables:

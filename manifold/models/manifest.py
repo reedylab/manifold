@@ -64,8 +64,10 @@ class Manifest(Base):
     title_override = Column(String, nullable=True)     # Display name override (original title preserved)
     stale_since = Column(DateTime(timezone=True), nullable=True)  # When channel disappeared from M3U source
     tags = Column(JSONB, default=list)
+    primary_tag = Column(String, nullable=True, index=True)
     event_end_at = Column(DateTime(timezone=True))
     active = Column(Boolean, default=True)
+    activation_mode = Column(String, nullable=False, default="auto", index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -163,6 +163,94 @@ def save_settings(data: dict = Body(default={})):
     return {"ok": True}
 
 
+# ── Tag Rules ────────────────────────────────────────────────────────────
+
+@router.get("/tag-rules")
+def get_tag_rules_endpoint():
+    from manifold.services.tag_rules import get_tag_rules
+    return get_tag_rules()
+
+
+@router.put("/tag-rules")
+def put_tag_rules_endpoint(data: dict = Body(default={})):
+    from manifold.services.tag_rules import set_tag_rules
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    priority = data.get("priority")
+    if priority is not None and not isinstance(priority, list):
+        return JSONResponse({"error": "priority must be a list"}, status_code=400)
+    set_tag_rules(data)
+    return {"ok": True}
+
+
+@router.post("/tag-rules/reset-defaults")
+def reset_tag_rules_endpoint():
+    from manifold.services.tag_rules import DEFAULT_TAG_RULES, set_tag_rules, get_tag_rules
+    set_tag_rules(DEFAULT_TAG_RULES)
+    return get_tag_rules()
+
+
+# ── Number Ranges ────────────────────────────────────────────────────────
+
+@router.get("/number-ranges")
+def get_number_ranges_endpoint():
+    from manifold.services.autonumber import get_number_ranges
+    return get_number_ranges()
+
+
+@router.put("/number-ranges")
+def put_number_ranges_endpoint(data: dict = Body(default={})):
+    from manifold.services.autonumber import set_number_ranges
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    for tag, spec in data.items():
+        if not isinstance(spec, dict):
+            return JSONResponse({"error": f"'{tag}' must be an object with start/end"}, status_code=400)
+        try:
+            start = int(spec.get("start"))
+            end = int(spec.get("end"))
+        except (TypeError, ValueError):
+            return JSONResponse({"error": f"'{tag}' start/end must be integers"}, status_code=400)
+        if start <= 0 or end < start:
+            return JSONResponse({"error": f"'{tag}' requires 0 < start <= end"}, status_code=400)
+    set_number_ranges(data)
+    return {"ok": True}
+
+
+@router.post("/number-ranges/reset-defaults")
+def reset_number_ranges_endpoint():
+    from manifold.services.autonumber import DEFAULT_NUMBER_RANGES, set_number_ranges, get_number_ranges
+    set_number_ranges(DEFAULT_NUMBER_RANGES)
+    return get_number_ranges()
+
+
+# ── Activation Rules ─────────────────────────────────────────────────────
+
+@router.get("/activation-rules")
+def get_activation_rules_endpoint():
+    from manifold.services.activation import get_activation_rules
+    return get_activation_rules()
+
+
+@router.put("/activation-rules")
+def put_activation_rules_endpoint(data: dict = Body(default={})):
+    from manifold.services.activation import set_activation_rules
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    tags_auto_on = data.get("tags_auto_on")
+    if tags_auto_on is not None and not isinstance(tags_auto_on, list):
+        return JSONResponse({"error": "tags_auto_on must be a list"}, status_code=400)
+    set_activation_rules(data)
+    return {"ok": True}
+
+
+@router.post("/activation-rules/reset-defaults")
+def reset_activation_rules_endpoint():
+    from manifold.services.activation import DEFAULT_ACTIVATION_RULES, set_activation_rules, get_activation_rules
+    set_activation_rules(DEFAULT_ACTIVATION_RULES)
+    return get_activation_rules()
+
+
 # ── Logs ─────────────────────────────────────────────────────────────────
 
 @router.get("/logs/tail")
