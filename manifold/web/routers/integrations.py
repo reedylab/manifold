@@ -129,7 +129,34 @@ def rebind_jellyfin(url: str, api_key: str) -> dict:
                    and p.get("Id")]
 
         if not matches:
-            return {"ok": False, "error": "No XMLTV provider found pointing at manifold.xml"}
+            # Self-heal: Jellyfin has no XMLTV provider pointing at
+            # manifold.xml (deleted, never configured, Jellyfin upgrade wiped
+            # it, etc.). Create one bound to whatever M3U tuners are present
+            # so the rest of the pipeline has something to talk to.
+            tuners = livetv.get("TunerHosts", []) or []
+            tuner_ids = [t.get("Id") for t in tuners if t.get("Id")]
+            if not tuner_ids:
+                return {"ok": False,
+                        "error": "Cannot auto-create XMLTV provider: no TunerHosts in Jellyfin"}
+            xmltv_path = get_setting("jellyfin_xmltv_path") or "/media/m3u/manifold.xml"
+            fresh_provider = {
+                "Type": "xmltv",
+                "Path": xmltv_path,
+                "EnableAllTuners": True,
+                "EnabledTuners": tuner_ids,
+                "EnableNewProgramIds": True,
+            }
+            try:
+                pr = requests.post(f"{base}/LiveTv/ListingProviders",
+                                   headers=headers, json=fresh_provider,
+                                   timeout=_TIMEOUT)
+                pr.raise_for_status()
+            except Exception as e:
+                logger.warning("[INTEGRATION] Auto-create XMLTV provider failed: %s", e)
+                return {"ok": False, "error": f"auto-create failed: {e}"}
+            logger.info("[INTEGRATION] Auto-created missing XMLTV provider at %s", xmltv_path)
+            refresh_result = refresh_jellyfin(url, api_key)
+            return {"ok": True, "created": 1, "refresh": refresh_result}
 
         # Self-healing: keep only the first, delete any extras up front.
         # This converges to a single provider even if the state is polluted.

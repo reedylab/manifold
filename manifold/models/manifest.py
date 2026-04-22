@@ -61,6 +61,7 @@ class Manifest(Base):
     logo_cached = Column(Boolean, default=False)
     stream_mode = Column(String, default="passthrough")
     channel_number = Column(Integer, nullable=True)    # User-assigned channel number
+    channel_number_pinned = Column(Boolean, default=False, nullable=False)  # True = user set manually, survives renumber/ingest
     title_override = Column(String, nullable=True)     # Display name override (original title preserved)
     stale_since = Column(DateTime(timezone=True), nullable=True)  # When channel disappeared from M3U source
     tags = Column(JSONB, default=list)

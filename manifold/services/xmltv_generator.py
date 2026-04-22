@@ -195,6 +195,7 @@ class XMLTVGeneratorService:
                 f.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
                 f.write(b'<!DOCTYPE tv SYSTEM "xmltv.dtd">\n')
                 tree.write(f, encoding="UTF-8", xml_declaration=False)
+            os.chmod(tmp_path, 0o644)
             os.replace(tmp_path, output_path)
         except Exception:
             os.unlink(tmp_path)
@@ -298,6 +299,7 @@ def _write_empty_xmltv(path):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
+        os.chmod(tmp_path, 0o644)
         os.replace(tmp_path, path)
     except Exception:
         os.unlink(tmp_path)

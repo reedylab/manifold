@@ -77,3 +77,49 @@ def compute_primary_tag(tags: list[str], priority: list[str]) -> str | None:
         if tag in tag_set:
             return tag
     return None
+
+
+def recompute_tags_for_all() -> dict:
+    """Re-apply current keyword rules to every manifest's existing title+URL.
+
+    Fixes the gap where channels that vanished from their source at the moment
+    a rule changed keep their stale tags until they reappear. Preserves
+    non-rule tags (group-title passthrough like ``mlb``/``football``,
+    event-detection tags like ``event``, structural tags like ``vod``) because
+    those aren't recoverable from the stored data without the original EXTINF
+    line.
+    """
+    from urllib.parse import urlparse
+    from manifold.database import get_session
+    from manifold.models.manifest import Manifest
+
+    rules = get_tag_rules()
+    priority = rules.get("priority") or []
+    rule_tag_names = {
+        t for t, spec in rules.items()
+        if t != "priority" and isinstance(spec, dict)
+    }
+
+    retagged = 0
+    with get_session() as session:
+        for m in session.query(Manifest).all():
+            title_lower = (m.title or "").lower()
+            domain_lower = urlparse(m.url or "").netloc.lower() if m.url else ""
+            matched = apply_keyword_rules(rules, title_lower, domain_lower)
+
+            existing = set(m.tags or [])
+            # Strip old rule-owned tags, layer the new matches on top, preserve
+            # everything else the ingest wrote (group-title, event, vod, etc.).
+            new_tags = (existing - rule_tag_names) | matched | {"live"}
+            if not new_tags:
+                new_tags = {"uncategorized"}
+
+            new_list = sorted(new_tags)
+            new_primary = compute_primary_tag(new_list, priority)
+
+            if new_list != (m.tags or []) or new_primary != m.primary_tag:
+                m.tags = new_list
+                m.primary_tag = new_primary
+                retagged += 1
+
+    return {"ok": True, "retagged": retagged}

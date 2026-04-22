@@ -190,22 +190,24 @@ class M3uIngestService:
 
     @staticmethod
     def _cleanup_disappeared(source_id: str, seen_ids: set) -> tuple[int, int]:
-        """Handle manifests that were in this source but aren't anymore.
+        """Delete any manifest tied to this source that isn't in the current
+        ingest's seen set.
 
-        - activation_mode in (force_on, force_off): never auto-deleted (user intent preserved)
-        - Events: deleted immediately (ephemeral)
-        - Auto + inactive: deleted immediately (never exposed, no grace needed)
-        - Auto + active, first miss: marked stale + deactivated
-        - Auto + active, stale >12h: deleted
+        The source M3U is the source of truth. If a channel is absent from the
+        current fetch, the row goes — regardless of activation_mode, active
+        flag, or channel_number_pinned. Nothing grants immunity. If the
+        channel reappears later, it'll be reinserted fresh.
 
-        Returns (stale_count, deleted_count). Safe to call with empty seen_ids —
-        skips cleanup so a transient fetch failure can't wipe an entire source.
+        Safety: if seen_ids is empty, skip cleanup entirely so a transient
+        fetch failure can't wipe the whole source.
+
+        Returns (0, deleted_count) — stale_count stays in the signature for
+        backward compatibility with callers, but nothing ever goes into the
+        stale bucket anymore.
         """
-        STALE_GRACE_HOURS = 12
         if not seen_ids:
             return (0, 0)
 
-        stale = 0
         deleted = 0
         with get_session() as session:
             all_source_manifests = (
@@ -213,43 +215,14 @@ class M3uIngestService:
                 .filter(Manifest.m3u_source_id == source_id)
                 .all()
             )
-            now = datetime.now(timezone.utc)
             for m in all_source_manifests:
                 if m.id in seen_ids:
                     continue
-
-                mode = m.activation_mode or "auto"
-                if mode in ("force_on", "force_off"):
-                    continue
-
-                is_event = "event" in (m.tags or [])
-                if is_event:
-                    logger.info("Deleting disappeared event: %s", m.title)
-                    session.delete(m)
-                    deleted += 1
-                    continue
-
-                if not m.active:
-                    logger.info("Deleting disappeared inactive channel: %s", m.title)
-                    session.delete(m)
-                    deleted += 1
-                    continue
-
-                if m.stale_since is None:
-                    m.stale_since = now
-                    m.active = False
-                    logger.info("Channel went stale (deactivated): %s", m.title)
-                    stale += 1
-                else:
-                    stale_hours = (now - m.stale_since).total_seconds() / 3600
-                    if stale_hours >= STALE_GRACE_HOURS:
-                        logger.info("Deleting stale channel (gone %.1fh): %s",
-                                    stale_hours, m.title)
-                        session.delete(m)
-                        deleted += 1
-                    else:
-                        stale += 1
-        return (stale, deleted)
+                logger.info("Deleting disappeared channel (mode=%s, active=%s): %s",
+                            m.activation_mode, m.active, m.title)
+                session.delete(m)
+                deleted += 1
+        return (0, deleted)
 
     @staticmethod
     def refresh_all() -> dict:
@@ -384,7 +357,10 @@ class M3uIngestService:
                     title_map[m.title] = m
                 if m.url_hash:
                     url_hash_map[m.url_hash] = m
-                if m.channel_number is not None:
+                # Only reserve slots for rows that actually hold a number
+                # the guide will show: pinned (user-locked) or currently active.
+                # Inactive rows release their numbers during the loop.
+                if m.channel_number is not None and (m.channel_number_pinned or m.active):
                     taken_numbers.add(m.channel_number)
             numberer = AutoNumberer(number_ranges, taken_numbers)
 
@@ -419,24 +395,46 @@ class M3uIngestService:
                         title_map[channel_title] = manifest
                     manifest.tags = computed_tags
                     manifest.primary_tag = primary_tag
-                    manifest.channel_number = numberer.assign(manifest.channel_number, primary_tag)
                     manifest.tvg_id = tvg_id
                     manifest.tvg_logo = tvg_logo
                     manifest.m3u_source_id = source_id
                     manifest.header_profile_id = header_profile_id
                     manifest.mime = "application/vnd.apple.mpegurl"
                     manifest.kind = "master"
-                    # Additive activation: auto-mode channels follow tag rules;
-                    # force_on/force_off rows preserve user intent across ingests.
-                    # Match any tag in the channel's full tag list, not just primary.
+                    # Additive activation must run BEFORE autonumber so
+                    # autonumber sees the post-rule active state.
+                    # Auto-mode channels follow tag rules; force_on/force_off
+                    # rows preserve user intent across ingests. Match any tag
+                    # in the channel's full tag list, not just primary.
                     if manifest.activation_mode == "auto":
                         manifest.active = any(t in tags_auto_on for t in computed_tags)
+                    if manifest.channel_number_pinned:
+                        # Pinned — keep the number and count it as taken so
+                        # autonumber doesn't reuse the slot.
+                        if manifest.channel_number is not None:
+                            numberer.taken.add(manifest.channel_number)
+                    elif manifest.active:
+                        # Only number active channels. Inactive ones don't show
+                        # in outputs, so hoarding slots for them starves active
+                        # channels in exhausted ranges. Mirrors renumber-all's
+                        # active-only scope.
+                        manifest.channel_number = numberer.assign(manifest.channel_number, primary_tag)
+                    else:
+                        # Inactive + not pinned → release the number so active
+                        # channels in the same range can use it next pass.
+                        manifest.channel_number = None
                     # Channel is present in source — clear stale status
                     manifest.stale_since = None
                 else:
                     # Use URL hash as sha256 placeholder for uniqueness
                     sha256_placeholder = hashlib.sha256(channel_url.encode("utf-8")).hexdigest()
 
+                    new_active = (True if auto_activate
+                                  else any(t in tags_auto_on for t in computed_tags))
+                    # Only burn a slot if the new row will actually be visible;
+                    # inactive new rows get a null number until they activate.
+                    new_number = (numberer.assign(None, primary_tag)
+                                  if new_active else None)
                     manifest = Manifest(
                         id=str(uuid.uuid4()),
                         capture_id=capture_id,
@@ -455,14 +453,13 @@ class M3uIngestService:
                         tvg_logo=tvg_logo,
                         tags=computed_tags,
                         primary_tag=primary_tag,
-                        channel_number=numberer.assign(None, primary_tag),
+                        channel_number=new_number,
                         # auto_activate=True on the source now means "insert new
                         # channels as force_on" (user wants this source always
                         # on, bypassing tag rules). auto_activate=False new rows
                         # enter auto mode and additive rules decide active.
                         activation_mode=("force_on" if auto_activate else "auto"),
-                        active=(True if auto_activate
-                                else any(t in tags_auto_on for t in computed_tags)),
+                        active=new_active,
                     )
                     session.add(manifest)
                     title_map[channel_title] = manifest

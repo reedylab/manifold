@@ -164,16 +164,23 @@ class EpgIngestService:
                 programmes_by_channel[channel_id] = []
             programmes_by_channel[channel_id].append(prog_xml)
 
-        # Drop any stale Epg rows for this source whose channel_id no longer
-        # appears in the XMLTV. Without this, when a source renames a channel
-        # id (e.g. channelarr moved from ch-XXXX to UUIDs), the old rows linger
-        # and get picked up by the XMLTV generator's title-match fallback.
-        current_ids = set(xmltv_channels.keys())
+        # Drop any stale Epg rows for this source. A row is stale if its
+        # channel_id either (a) no longer appears in the current XMLTV, or
+        # (b) has no matching manifest tvg-id in the linked M3U source. The
+        # second case matters because we only upsert rows whose channel_id
+        # maps to a manifest, so a manifest disappearing from the M3U leaves
+        # an orphan Epg row otherwise.
+        valid_ids = set(xmltv_channels.keys()) & set(tvg_to_title.keys())
+        deleted_epg = 0
         with get_session() as session:
             existing_rows = session.query(Epg).filter_by(epg_source_id=source_id).all()
             for r in existing_rows:
-                if r.channel_id not in current_ids:
+                if r.channel_id not in valid_ids:
                     session.delete(r)
+                    deleted_epg += 1
+        if deleted_epg:
+            logger.info("EPG %s: deleted %d stale rows (gone from XMLTV or M3U)",
+                        source_name, deleted_epg)
 
         # Upsert EPG entries — only for channels that have a matching tvg-id in our manifests
         channel_count = 0

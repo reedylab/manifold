@@ -36,6 +36,7 @@ class ChannelManagerService:
                     Epg.channel_name,
                     Manifest.primary_tag,
                     Manifest.activation_mode,
+                    Manifest.channel_number_pinned,
                 )
                 .outerjoin(M3uSource, Manifest.m3u_source_id == M3uSource.id)
                 .outerjoin(
@@ -78,6 +79,7 @@ class ChannelManagerService:
                 "epg_mapped": row[12] is not None,
                 "primary_tag": row[14],
                 "activation_mode": row[15],
+                "channel_number_pinned": bool(row[16]),
             })
         return channels
 
@@ -133,7 +135,16 @@ class ChannelManagerService:
                         m.active = False
             if "channel_number" in data:
                 val = data["channel_number"]
-                m.channel_number = int(val) if val is not None else None
+                if val is None:
+                    # User cleared the number → unpin and let rules take over.
+                    m.channel_number = None
+                    m.channel_number_pinned = False
+                else:
+                    m.channel_number = int(val)
+                    m.channel_number_pinned = True
+            if "channel_number_pinned" in data:
+                # Allow explicit toggle (e.g. "unpin" without clearing number).
+                m.channel_number_pinned = bool(data["channel_number_pinned"])
             if "title_override" in data:
                 val = data["title_override"]
                 m.title_override = val if val else None

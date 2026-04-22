@@ -24,6 +24,7 @@ SETTING_KEYS = [
     "scheduler_m3u_refresh_hours", "scheduler_epg_refresh_hours",
     "vpn_auto_rotate_minutes", "vpn_scheduled_rotate_time",
     "export_strategy", "export_local_path",
+    "jellyfin_xmltv_path",
 ]
 
 
@@ -173,14 +174,18 @@ def get_tag_rules_endpoint():
 
 @router.put("/tag-rules")
 def put_tag_rules_endpoint(data: dict = Body(default={})):
-    from manifold.services.tag_rules import set_tag_rules
+    from manifold.services.tag_rules import set_tag_rules, recompute_tags_for_all
     if not isinstance(data, dict):
         return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
     priority = data.get("priority")
     if priority is not None and not isinstance(priority, list):
         return JSONResponse({"error": "priority must be a list"}, status_code=400)
     set_tag_rules(data)
-    return {"ok": True}
+    # Apply the new rules to existing channels immediately so force_on /
+    # absent-from-source rows get the new keyword matches without waiting for
+    # their next ingest.
+    recompute_result = recompute_tags_for_all()
+    return {"ok": True, "retagged": recompute_result.get("retagged", 0)}
 
 
 @router.post("/tag-rules/reset-defaults")

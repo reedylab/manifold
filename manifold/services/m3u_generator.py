@@ -115,12 +115,18 @@ def _resolve_group(tags: list) -> str:
 
 
 def _atomic_write(path: str, content: str):
-    """Write to temp file then rename for atomic update."""
+    """Write to temp file then rename for atomic update.
+
+    tempfile.mkstemp creates 0o600 files; chmod to 0o644 so downstream readers
+    running as a different user (e.g. Jellyfin reading from a shared mount)
+    can actually open them.
+    """
     dir_name = os.path.dirname(path)
     fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
+        os.chmod(tmp_path, 0o644)
         os.replace(tmp_path, path)
     except Exception:
         os.unlink(tmp_path)

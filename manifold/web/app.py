@@ -56,6 +56,10 @@ async def lifespan(app: FastAPI):
                 conn.execute(text(
                     "UPDATE manifests SET activation_mode = CASE WHEN active THEN 'force_on' ELSE 'force_off' END"
                 ))
+            if "channel_number_pinned" not in manifest_cols:
+                conn.execute(text(
+                    "ALTER TABLE manifests ADD COLUMN channel_number_pinned BOOLEAN NOT NULL DEFAULT FALSE"
+                ))
             conn.commit()
 
         if "m3u_sources" in tables:

@@ -74,7 +74,12 @@ def renumber_channels(data: dict = Body(default={})):
             query = query.filter(Manifest.id.in_(ids))
         if tags:
             query = query.filter(Manifest.primary_tag.in_(tags))
-        in_scope = query.all()
+        candidates = query.all()
+        # Pinned channels are user-locked — their numbers are preserved across
+        # renumber. Their numbers still count as "taken" so auto channels
+        # don't collide.
+        pinned = [m for m in candidates if m.channel_number_pinned]
+        in_scope = [m for m in candidates if not m.channel_number_pinned]
         in_scope_ids = {m.id for m in in_scope}
 
         taken: set[int] = set()
@@ -97,7 +102,8 @@ def renumber_channels(data: dict = Body(default={})):
                 m.channel_number = new_num
                 assigned += 1
 
-    return {"ok": True, "scope": len(in_scope), "assigned": assigned}
+    return {"ok": True, "scope": len(in_scope), "assigned": assigned,
+            "pinned_preserved": len(pinned)}
 
 
 @router.post("/channels/{manifest_id}/reset-activation")
@@ -106,6 +112,15 @@ def reset_channel_activation(manifest_id: str):
     if not ok:
         return JSONResponse({"error": "not found"}, status_code=404)
     return {"ok": True, "activation_mode": "auto"}
+
+
+@router.post("/channels/recompute-tags")
+def recompute_all_tags():
+    """Re-apply current tag rules to every channel based on its stored title
+    and URL. Useful after editing rules when some channels aren't currently
+    in their source M3U (force_on rows in particular)."""
+    from manifold.services.tag_rules import recompute_tags_for_all
+    return recompute_tags_for_all()
 
 
 @router.post("/channels/bulk-activate")

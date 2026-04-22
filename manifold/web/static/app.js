@@ -283,7 +283,12 @@ function renderChannelTable(){
 
     return `<tr data-id="${ch.id}">
       <td class="td-check"><input type="checkbox" data-bulk-channels="${ch.id}"></td>
-      <td class="td-chno"><input type="number" class="chno-input" value="${ch.channel_number||''}" data-chno="${ch.id}" placeholder="-" min="1"></td>
+      <td class="td-chno">
+        <div class="chno-wrap ${ch.channel_number_pinned ? 'chno-pinned' : ''}" title="${ch.channel_number_pinned ? 'Pinned — survives renumber. Clear the number to unpin.' : 'Auto-numbered by tag rules'}">
+          <input type="number" class="chno-input" value="${ch.channel_number||''}" data-chno="${ch.id}" placeholder="-" min="1">
+          ${ch.channel_number_pinned ? '<span class="chno-pin-ic">📌</span>' : ''}
+        </div>
+      </td>
       <td class="title-clickable"><span class="ch-title-wrap">${logoHtml}${ch.title_override ? `<span>${ch.title_override}</span><span class="ch-source-title">${ch.title}</span>` : (ch.title||"Untitled")}</span></td>
       <td>${tags}</td>
       <td>${primary}</td>
@@ -308,7 +313,8 @@ function renderChannelTable(){
     inp.addEventListener("change", async ()=>{
       const val = inp.value ? parseInt(inp.value) : null;
       await apiPut(`/channels/${inp.dataset.chno}`, {channel_number: val});
-      toast("Channel number updated", "success");
+      toast(val !== null ? "Channel number pinned" : "Unpinned — rules will reassign", "success");
+      loadChannels();  // refresh so pin indicator updates
     });
   });
   $$("[data-toggle]", body).forEach(cb=>{
@@ -1522,10 +1528,39 @@ async function loadTaggingSettings(){
   }
 }
 
+function _detectTaggingIssues(){
+  const priority = new Set(_tagRulesData?.priority || []);
+  const ruleTags = new Set(Object.keys(_tagRulesData || {}).filter(k => k !== "priority"));
+  const rangeTags = new Set(Object.keys(_numberRangesData || {}));
+  const autoTags = new Set(_activationRulesData?.tags_auto_on || []);
+  const issues = [];
+  for(const t of rangeTags){
+    if(!priority.has(t)){
+      issues.push(`<code>${t}</code> has a number range but isn't in priority — channels matching it won't land in that range.`);
+    }
+  }
+  for(const t of ruleTags){
+    if(!priority.has(t)){
+      issues.push(`<code>${t}</code> is defined as a tag rule but isn't in priority — it will be a secondary tag only, not primary.`);
+    }
+  }
+  // Activation tags without any source (not in rule tags AND not a known
+  // structural tag) get flagged more gently since group-title passthroughs
+  // and manual tags legitimately appear here.
+  return issues;
+}
+
 function renderTaggingSettings(){
   const c = $("#tagging-container");
   if(!c) return;
-  c.innerHTML = `<div class="tagging-grid">
+  const issues = _detectTaggingIssues();
+  const issuesHtml = issues.length
+    ? `<div class="tagging-issues">
+        <strong>⚠ ${issues.length} configuration issue${issues.length===1?"":"s"}</strong>
+        <ul>${issues.map(i => `<li>${i}</li>`).join("")}</ul>
+       </div>`
+    : "";
+  c.innerHTML = `${issuesHtml}<div class="tagging-grid">
     <div class="tagging-card" id="tag-rules-card">
       <div class="tagging-card-header">
         <h3>Tag Rules</h3>

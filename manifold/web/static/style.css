@@ -200,6 +200,17 @@ body.theme-dark{
 .range-row-empty{padding:12px;text-align:center;color:var(--text-muted);font-style:italic}
 
 /* Tagging settings subtab */
+.tagging-issues{
+  margin-bottom:14px;padding:10px 14px;
+  background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);
+  border-radius:8px;color:var(--warn);font-size:13px;
+}
+.tagging-issues ul{margin:6px 0 0;padding-left:20px}
+.tagging-issues li{margin:3px 0}
+.tagging-issues code{
+  background:rgba(0,0,0,.2);padding:1px 6px;border-radius:4px;
+  font-size:12px;font-family:inherit;
+}
 .tagging-grid{display:flex;flex-direction:column;gap:16px}
 .tagging-card{
   background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);
@@ -413,8 +424,11 @@ body.theme-dark{
 .disk-pct{font-size:16px;font-weight:600;text-align:center}
 
 /* Channel number column */
-.td-chno{width:55px;padding:4px 6px}
-.th-chno{width:55px}
+.td-chno{width:75px;padding:4px 6px}
+.th-chno{width:75px}
+.chno-wrap{position:relative;display:flex;align-items:center;gap:4px}
+.chno-pin-ic{font-size:10px;line-height:1;opacity:.8}
+.chno-pinned .chno-input{border-color:var(--warn);background:rgba(245,158,11,.06)}
 .chno-input{
   width:45px;padding:4px 6px;text-align:center;
   background:var(--bg);color:var(--text);border:1px solid var(--border);
