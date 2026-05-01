@@ -146,6 +146,8 @@ def rebind_jellyfin(url: str, api_key: str) -> dict:
                 "EnabledTuners": tuner_ids,
                 "EnableNewProgramIds": True,
             }
+            from manifold.services.jellyfin_categories import apply_to_provider
+            fresh_provider = apply_to_provider(fresh_provider)
             try:
                 pr = requests.post(f"{base}/LiveTv/ListingProviders",
                                    headers=headers, json=fresh_provider,
@@ -179,6 +181,11 @@ def rebind_jellyfin(url: str, api_key: str) -> dict:
         # Snapshot all existing settings verbatim; drop the Id so Jellyfin
         # generates a new one and treats it as a fresh provider.
         fresh = {k: v for k, v in keeper.items() if k != "Id"}
+        # Sync the four Movies/Kids/News/Sports category arrays from our
+        # taxonomy mapping so Jellyfin classifies programmes into its main
+        # tabs based on the tags manifold emits.
+        from manifold.services.jellyfin_categories import apply_to_provider
+        fresh = apply_to_provider(fresh)
 
         # DELETE MUST succeed before we POST. Silent DELETE failures are
         # exactly how we ended up with tens of thousands of duplicates.

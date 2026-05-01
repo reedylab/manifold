@@ -237,6 +237,17 @@ body.theme-dark{
   .tag-rule-grid{grid-template-columns:1fr}
 }
 
+/* Jellyfin category map grid */
+.jf-cats-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
+.jf-cats-grid textarea{
+  width:100%;padding:6px 8px;font-family:inherit;font-size:12px;
+  background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);
+  resize:vertical;
+}
+@media (max-width:768px){
+  .jf-cats-grid{grid-template-columns:1fr}
+}
+
 /* Number Ranges editor */
 .range-edit-list{display:flex;flex-direction:column;gap:6px;margin:10px 0}
 .range-edit-row{

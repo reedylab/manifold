@@ -1510,17 +1510,20 @@ function showIngestWarnings(warnings){
 let _tagRulesData = null;
 let _numberRangesData = null;
 let _activationRulesData = null;
+let _jfCategoryMap = null;
 
 async function loadTaggingSettings(){
   try {
-    const [rules, ranges, activation] = await Promise.all([
+    const [rules, ranges, activation, jfCats] = await Promise.all([
       api("/tag-rules"),
       api("/number-ranges"),
       api("/activation-rules"),
+      api("/jellyfin-category-map"),
     ]);
     _tagRulesData = rules;
     _numberRangesData = ranges;
     _activationRulesData = activation;
+    _jfCategoryMap = jfCats;
     renderTaggingSettings();
   } catch(e){
     const c = $("#tagging-container");
@@ -1596,6 +1599,35 @@ function renderTaggingSettings(){
       <div id="number-ranges-warnings" class="range-edit-warnings"></div>
     </div>
 
+    <div class="tagging-card" id="jf-cats-card">
+      <div class="tagging-card-header">
+        <h3>Jellyfin Category Map</h3>
+        <div class="tagging-card-actions">
+          <button class="btn btn-sm btn-ghost" id="jf-cats-reset">Reset to Defaults</button>
+          <button class="btn btn-sm btn-primary" id="jf-cats-save">Save</button>
+        </div>
+      </div>
+      <p class="field-hint">Maps your tags to Jellyfin's four hardcoded Live TV tabs (Movies / Kids / News / Sports). Jellyfin reads these on every rebind and classifies programmes accordingly. Enter one tag per line.</p>
+      <div class="jf-cats-grid">
+        <div class="setting-field">
+          <label>Movies</label>
+          <textarea rows="4" id="jf-cats-movies"></textarea>
+        </div>
+        <div class="setting-field">
+          <label>Kids</label>
+          <textarea rows="4" id="jf-cats-kids"></textarea>
+        </div>
+        <div class="setting-field">
+          <label>News</label>
+          <textarea rows="4" id="jf-cats-news"></textarea>
+        </div>
+        <div class="setting-field">
+          <label>Sports</label>
+          <textarea rows="4" id="jf-cats-sports"></textarea>
+        </div>
+      </div>
+    </div>
+
     <div class="tagging-card" id="activation-rules-card">
       <div class="tagging-card-header">
         <h3>Activation Rules</h3>
@@ -1622,6 +1654,7 @@ function renderTaggingSettings(){
   _renderTagRulesEditor();
   _renderNumberRangesEditor();
   _renderActivationRulesEditor();
+  _renderJfCategoriesEditor();
 
   $("#tag-rules-add").addEventListener("click", ()=>{
     const name = (prompt("New tag name (lowercase, no spaces):") || "").trim().toLowerCase();
@@ -1685,6 +1718,14 @@ function renderTaggingSettings(){
   $("#activation-custom-input").addEventListener("keydown", (e)=>{
     if(e.key === "Enter"){ e.preventDefault(); $("#activation-custom-add").click(); }
   });
+
+  $("#jf-cats-save").addEventListener("click", _saveJfCategories);
+  $("#jf-cats-reset").addEventListener("click", async ()=>{
+    if(!confirm("Reset Jellyfin category map to defaults?")) return;
+    _jfCategoryMap = await apiPost("/jellyfin-category-map/reset-defaults", {});
+    _renderJfCategoriesEditor();
+    toast("Category map reset to defaults", "success");
+  });
 }
 
 function _renderActivationRulesEditor(){
@@ -1718,6 +1759,37 @@ function _renderActivationRulesEditor(){
       _renderActivationRulesEditor();
     });
   });
+}
+
+function _renderJfCategoriesEditor(){
+  const m = _jfCategoryMap || {};
+  const fill = (id, key) => {
+    const el = $(id);
+    if(el) el.value = (m[key] || []).join("\n");
+  };
+  fill("#jf-cats-movies", "movies");
+  fill("#jf-cats-kids", "kids");
+  fill("#jf-cats-news", "news");
+  fill("#jf-cats-sports", "sports");
+}
+
+async function _saveJfCategories(){
+  const read = (id) => ($(id).value || "")
+    .split("\n").map(s => s.trim().toLowerCase()).filter(Boolean);
+  const payload = {
+    movies: read("#jf-cats-movies"),
+    kids:   read("#jf-cats-kids"),
+    news:   read("#jf-cats-news"),
+    sports: read("#jf-cats-sports"),
+  };
+  try {
+    await apiPut("/jellyfin-category-map", payload);
+    _jfCategoryMap = await api("/jellyfin-category-map");
+    _renderJfCategoriesEditor();
+    toast("Category map saved. Will sync on next Jellyfin rebind.", "success");
+  } catch(e){
+    toast("Failed to save category map", "error");
+  }
 }
 
 async function _saveActivationRules(){

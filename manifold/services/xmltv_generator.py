@@ -81,6 +81,7 @@ class XMLTVGeneratorService:
                     Epg.channel_name,
                     Epg.icon_url,
                     Epg.epg_data,
+                    Manifest.tags,
                 )
                 .outerjoin(
                     Epg,
@@ -114,7 +115,7 @@ class XMLTVGeneratorService:
         # this, rename of a source's channel ids leaves orphan rows that
         # masquerade as valid matches and inject old programmes.
         channels = {}
-        for manifest_id, title, tvg_id, logo_cached, channel_number, title_override, epg_ch_id, epg_ch_name, icon_url, epg_data in rows:
+        for manifest_id, title, tvg_id, logo_cached, channel_number, title_override, epg_ch_id, epg_ch_name, icon_url, epg_data, tags in rows:
             is_tvg_match = bool(tvg_id and epg_ch_id == tvg_id)
             existing = channels.get(manifest_id)
             if existing and existing["tvg_match"] and not is_tvg_match:
@@ -136,6 +137,7 @@ class XMLTVGeneratorService:
                 "icon_url": icon_url,
                 "epg_data": epg_data,
                 "tvg_match": is_tvg_match,
+                "tags": list(tags or []),
             }
 
         # Write <channel> elements
@@ -169,19 +171,22 @@ class XMLTVGeneratorService:
 
         for manifest_id, ch in channels.items():
             if ch["epg_data"]:
-                n = _parse_and_append_programmes(tv, ch["channel_id"], ch["epg_data"], programme_images)
+                n = _parse_and_append_programmes(tv, ch["channel_id"], ch["epg_data"],
+                                                 programme_images, ch["tags"])
                 programme_count += n
                 if n > 0:
                     real_count += 1
                 else:
                     # Parse failed — fall back to dummy
                     programme_count += _generate_dummy_programmes(
-                        tv, ch["channel_id"], ch["title"], dummy_days, dummy_block
+                        tv, ch["channel_id"], ch["title"], dummy_days, dummy_block,
+                        ch["tags"]
                     )
                     dummy_count += 1
             else:
                 programme_count += _generate_dummy_programmes(
-                    tv, ch["channel_id"], ch["title"], dummy_days, dummy_block
+                    tv, ch["channel_id"], ch["title"], dummy_days, dummy_block,
+                    ch["tags"]
                 )
                 dummy_count += 1
 
@@ -212,7 +217,27 @@ class XMLTVGeneratorService:
         }
 
 
-def _parse_and_append_programmes(tv_element, channel_id, epg_data, programme_images=None):
+def _inject_channel_categories(prog_el, channel_tags):
+    """Add <category> subelements for each channel tag that isn't already
+    present on the programme. Jellyfin classifies programmes into its fixed
+    Movies/Kids/News/Sports buckets by matching these category strings
+    against its listing provider's category arrays."""
+    if not channel_tags:
+        return
+    existing = set()
+    for c in prog_el.findall("category"):
+        if c.text:
+            existing.add(c.text.strip().lower())
+    for tag in channel_tags:
+        t = str(tag).strip().lower()
+        if not t or t in existing:
+            continue
+        cat = SubElement(prog_el, "category", lang="en")
+        cat.text = t
+        existing.add(t)
+
+
+def _parse_and_append_programmes(tv_element, channel_id, epg_data, programme_images=None, channel_tags=None):
     count = 0
     if programme_images is None:
         programme_images = {}
@@ -234,6 +259,7 @@ def _parse_and_append_programmes(tv_element, channel_id, epg_data, programme_ima
                     if icon_url:
                         SubElement(stdlib_prog, "icon", src=icon_url)
 
+            _inject_channel_categories(stdlib_prog, channel_tags)
             _reorder_programme_children(stdlib_prog)
             tv_element.append(stdlib_prog)
             count += 1
@@ -242,7 +268,7 @@ def _parse_and_append_programmes(tv_element, channel_id, epg_data, programme_ima
     return count
 
 
-def _generate_dummy_programmes(tv_element, channel_id, channel_title, days=7, block_minutes=30):
+def _generate_dummy_programmes(tv_element, channel_id, channel_title, days=7, block_minutes=30, channel_tags=None):
     """Generate dummy programme blocks for channels without real EPG."""
     now = datetime.now(timezone.utc)
     # Start from beginning of today
@@ -280,6 +306,8 @@ def _generate_dummy_programmes(tv_element, channel_id, channel_title, days=7, bl
 
         cat_el = SubElement(prog, "category", lang="en")
         cat_el.text = "General"
+
+        _inject_channel_categories(prog, channel_tags)
 
         current = prog_stop
         count += 1

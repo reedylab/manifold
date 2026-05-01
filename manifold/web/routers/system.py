@@ -256,6 +256,38 @@ def reset_activation_rules_endpoint():
     return get_activation_rules()
 
 
+# ── Jellyfin Category Map ────────────────────────────────────────────────
+
+@router.get("/jellyfin-category-map")
+def get_jf_category_map():
+    from manifold.services.jellyfin_categories import get_category_map
+    return get_category_map()
+
+
+@router.put("/jellyfin-category-map")
+def put_jf_category_map(data: dict = Body(default={})):
+    from manifold.services.jellyfin_categories import set_category_map
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    allowed = {"movies", "kids", "news", "sports"}
+    for bucket in list(data.keys()):
+        if bucket not in allowed:
+            return JSONResponse({"error": f"unknown bucket: {bucket} (allowed: {sorted(allowed)})"},
+                                status_code=400)
+        if not isinstance(data[bucket], list):
+            return JSONResponse({"error": f"{bucket} must be a list of tag names"},
+                                status_code=400)
+    set_category_map(data)
+    return {"ok": True}
+
+
+@router.post("/jellyfin-category-map/reset-defaults")
+def reset_jf_category_map():
+    from manifold.services.jellyfin_categories import DEFAULT_CATEGORY_MAP, set_category_map, get_category_map
+    set_category_map(DEFAULT_CATEGORY_MAP)
+    return get_category_map()
+
+
 # ── Logs ─────────────────────────────────────────────────────────────────
 
 @router.get("/logs/tail")
