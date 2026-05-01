@@ -429,3 +429,62 @@ def system_stats():
         "disk_used_gb": round(disk.used / (1024 ** 3), 2),
         "disk_total_gb": round(disk.total / (1024 ** 3), 2),
     }
+
+
+# ── Memory leak hunt (tracemalloc) ───────────────────────────────────────
+# Requires PYTHONTRACEMALLOC=N in the env so tracking starts before any
+# allocations happen. Snapshot is module-global so successive calls can diff.
+
+_baseline_snapshot = None
+
+
+@router.post("/debug/memstats/baseline")
+def memstats_baseline():
+    import tracemalloc
+    global _baseline_snapshot
+    if not tracemalloc.is_tracing():
+        return JSONResponse({"ok": False, "error": "tracemalloc not enabled"}, status_code=400)
+    _baseline_snapshot = tracemalloc.take_snapshot()
+    cur, peak = tracemalloc.get_traced_memory()
+    proc = psutil.Process()
+    return {"ok": True, "baseline_set": True,
+            "traced_current_mb": round(cur / (1024 ** 2), 1),
+            "traced_peak_mb": round(peak / (1024 ** 2), 1),
+            "rss_mb": round(proc.memory_info().rss / (1024 ** 2), 1)}
+
+
+@router.get("/debug/memstats")
+def memstats(top: int = 25, group_by: str = "lineno", diff: bool = True):
+    import tracemalloc
+    if not tracemalloc.is_tracing():
+        return JSONResponse({"ok": False, "error": "tracemalloc not enabled"}, status_code=400)
+    snap = tracemalloc.take_snapshot()
+    cur, peak = tracemalloc.get_traced_memory()
+    proc = psutil.Process()
+    out = {
+        "ok": True,
+        "rss_mb": round(proc.memory_info().rss / (1024 ** 2), 1),
+        "traced_current_mb": round(cur / (1024 ** 2), 1),
+        "traced_peak_mb": round(peak / (1024 ** 2), 1),
+        "has_baseline": _baseline_snapshot is not None,
+    }
+    if diff and _baseline_snapshot is not None:
+        stats = snap.compare_to(_baseline_snapshot, group_by)
+        out["mode"] = f"diff vs baseline ({group_by})"
+    else:
+        stats = snap.statistics(group_by)
+        out["mode"] = f"absolute ({group_by})"
+    out["top"] = []
+    for s in stats[:top]:
+        frame = s.traceback[0] if s.traceback else None
+        entry = {
+            "file": frame.filename if frame else "?",
+            "line": frame.lineno if frame else 0,
+            "size_mb": round(s.size / (1024 ** 2), 3),
+            "count": s.count,
+        }
+        if hasattr(s, "size_diff"):
+            entry["size_diff_mb"] = round(s.size_diff / (1024 ** 2), 3)
+            entry["count_diff"] = s.count_diff
+        out["top"].append(entry)
+    return out

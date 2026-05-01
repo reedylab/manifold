@@ -241,6 +241,7 @@ def _parse_and_append_programmes(tv_element, channel_id, epg_data, programme_ima
     count = 0
     if programme_images is None:
         programme_images = {}
+    root = None
     try:
         wrapped = f"<root>{epg_data}</root>"
         root = etree.fromstring(wrapped.encode("utf-8"))
@@ -265,6 +266,13 @@ def _parse_and_append_programmes(tv_element, channel_id, epg_data, programme_ima
             count += 1
     except Exception as e:
         logger.warning("Failed to parse EPG data for channel %s: %s", channel_id, e)
+    finally:
+        # libxml2 holds C heap for the parsed tree until the lxml wrapper is
+        # GC'd AND its children's parent backrefs go away. Without this, RSS
+        # grew ~250 MB per regen — explicit clear forces immediate release.
+        if root is not None:
+            root.clear()
+            del root
     return count
 
 

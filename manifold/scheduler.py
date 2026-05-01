@@ -1,9 +1,38 @@
 """APScheduler for periodic M3U/XMLTV regen and cleanup."""
 
+import ctypes
+import ctypes.util
+import gc
 import logging
 import os
+from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+# Resolve libc.malloc_trim once. Returns memory freed by Python/lxml/etc back
+# to the OS instead of letting glibc's main arena hold it. Without this, RSS
+# climbs ~250 MB per regen even after the leak fix, since freed chunks stay
+# parked in the arena. None on non-glibc systems (musl, etc.) — the wrapper
+# below becomes a no-op.
+_libc = None
+try:
+    _libc_path = ctypes.util.find_library("c")
+    if _libc_path:
+        _libc = ctypes.CDLL(_libc_path)
+        _libc.malloc_trim.argtypes = [ctypes.c_size_t]
+        _libc.malloc_trim.restype = ctypes.c_int
+except Exception:
+    _libc = None
+
+
+def _release_unused_memory():
+    """Force Python GC then ask glibc to return freed chunks to the OS."""
+    gc.collect()
+    if _libc is not None:
+        try:
+            _libc.malloc_trim(0)
+        except Exception:
+            pass
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +85,8 @@ def start_scheduler(app):
             _trigger_auto_push()
         except Exception as e:
             logger.error("M3U/XMLTV regen failed: %s", e)
+        finally:
+            _release_unused_memory()
 
     def cleanup_job():
         try:
@@ -90,6 +121,8 @@ def start_scheduler(app):
             _trigger_auto_push()
         except Exception as e:
             logger.error("M3U refresh failed: %s", e)
+        finally:
+            _release_unused_memory()
 
     def epg_refresh_job():
         try:
@@ -98,6 +131,8 @@ def start_scheduler(app):
             _trigger_auto_push()
         except Exception as e:
             logger.error("EPG refresh failed: %s", e)
+        finally:
+            _release_unused_memory()
 
     def vpn_sample_job():
         try:
@@ -144,8 +179,14 @@ def start_scheduler(app):
                        replace_existing=True)
 
     epg_refresh_hours = int(get_setting("scheduler_epg_refresh_hours", "12") or "12")
+    # Pin the first fire to ~2 min after startup so EPG ingest happens once
+    # per session regardless of how long the container survives. Without this,
+    # APScheduler's interval trigger schedules first_fire = startup + interval,
+    # so a 12h interval needs 12h of uptime — which we can't guarantee under
+    # memory pressure. Subsequent fires follow the interval as normal.
     _scheduler.add_job(epg_refresh_job, "interval", hours=epg_refresh_hours,
                        id="epg_refresh", name="EPG Data Refresh",
+                       next_run_time=datetime.now() + timedelta(minutes=2),
                        replace_existing=True)
 
     # Latency sampler runs every 60s in BOTH vpn and local modes — it powers

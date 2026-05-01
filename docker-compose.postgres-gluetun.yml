@@ -66,6 +66,7 @@ services:
       - GLUETUN_CONTROL_USER=${VPN_CONTROL_USER:-admin}
       - GLUETUN_CONTROL_PASS=${VPN_CONTROL_PASS}
       - PYTHONUNBUFFERED=1
+      - MALLOC_TRIM_THRESHOLD_=131072
     volumes:
       - ${OUTPUT_PATH:-/mnt/das-disk-1/media}/m3u:/app/output
       - logos:/app/logos
