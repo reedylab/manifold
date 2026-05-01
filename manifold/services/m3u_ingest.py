@@ -78,9 +78,16 @@ def _compute_tags(
     if extinf_line:
         group_match = re.search(r'group-title=["\']([^"\']*)["\']', extinf_line, re.I)
         if group_match:
-            group = group_match.group(1).strip().lower()
-            if group and group not in {'live', 'uncategorized'}:
-                tags.add(group)
+            # tvheadend-style multi-tag convention: group-title can be a
+            # semicolon-delimited list so upstream sources can pack multiple
+            # categories into a single standard M3U attribute without needing
+            # a custom field. Single-value group-titles still produce exactly
+            # one tag (split on ";" with no separator returns a one-element
+            # list), so no regression for existing sources.
+            for part in group_match.group(1).split(';'):
+                part = part.strip().lower()
+                if part and part not in {'live', 'uncategorized'}:
+                    tags.add(part)
 
     event_pattern = re.search(r'(\d{1,2}[\/\-]\d{1,2}.*?\d{1,2}:\d{2}\s*[AP]M)', title)
     has_teams = bool(re.search(r'\bvs\b|@|vs\.|at\s+|\s+@\s+', title, re.I))
