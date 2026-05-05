@@ -28,6 +28,9 @@ gluetun/
 .claude/
 .plan.md
 
+# Local-only planning docs (in-progress design notes, migration scratch, etc.)
+planning/
+
 # OS
 .DS_Store
 Thumbs.db
